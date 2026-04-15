@@ -11,6 +11,7 @@ from .config import MrCleanConfig, sample_config
 from .dispatch import DispatchCandidate, DispatchPlanner
 from .monitor import RepositoryScanner, ScanResult
 from .policies import PolicyEngine
+from .proposals import Proposal, ProposalGenerator
 from .runner import ActionExecution, LocalRunner, RunSession
 from .watch import RepositoryWatcher, WatchEvent
 
@@ -101,6 +102,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="include healthy PRs in the queue instead of only pending or failing ones",
     )
 
+    propose_parser = subparsers.add_parser(
+        "propose",
+        help="generate a bounded edit proposal from a runnable candidate",
+    )
+    propose_parser.add_argument("config", help="path to mrclean TOML config")
+    propose_parser.add_argument("--repo", action="append", default=[], help="limit propose to a configured repo")
+    propose_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
+    propose_parser.add_argument("--limit", type=int, default=1, help="number of candidates to propose for when --pr is omitted")
+    propose_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    propose_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+
     return parser
 
 
@@ -122,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_dispatch(args)
     if args.command == "run":
         return _run_run(args)
+    if args.command == "propose":
+        return _run_propose(args)
 
     parser.error("unknown command")
     return 2
@@ -288,6 +306,43 @@ def _run_run(args: argparse.Namespace) -> int:
 
     for session in sessions:
         _print_run_session(session)
+        print()
+    return 0
+
+
+def _run_propose(args: argparse.Namespace) -> int:
+    config = MrCleanConfig.from_toml(Path(args.config))
+    scanner = RepositoryScanner(config)
+    results = scanner.scan(
+        repositories=tuple(args.repo),
+        include_healthy=bool(args.include_healthy),
+    )
+    planner = DispatchPlanner(PolicyEngine(config.policy))
+    candidates = planner.build(results)
+    candidate_map = {(candidate.repository, candidate.number): candidate for candidate in candidates}
+
+    runner = LocalRunner()
+    sessions = runner.run(candidates, pr_number=args.pr, limit=args.limit)
+    if args.pr is not None and not sessions:
+        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        return 1
+    if not sessions:
+        print("No proposal candidates.")
+        return 0
+
+    generator = ProposalGenerator(config)
+    proposals = []
+    for session in sessions:
+        candidate = candidate_map[(session.repository, session.number)]
+        proposals.append(generator.generate(candidate, session))
+
+    if args.json:
+        payload = [_proposal_payload(item) for item in proposals]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    for proposal in proposals:
+        _print_proposal(proposal)
         print()
     return 0
 
@@ -488,6 +543,31 @@ def _print_run_session(session: RunSession) -> None:
             print("  stderr:")
             for line in execution.stderr.rstrip().splitlines():
                 print(f"    {line}")
+
+
+def _proposal_payload(proposal: Proposal) -> dict[str, object]:
+    return {
+        "repository": proposal.repository,
+        "number": proposal.number,
+        "branch": proposal.branch,
+        "candidate_status": proposal.candidate_status,
+        "run_status": proposal.run_status,
+        "content": proposal.content,
+        "model_provider": proposal.model_provider,
+        "model_name": proposal.model_name,
+        "raw": proposal.raw,
+    }
+
+
+def _print_proposal(proposal: Proposal) -> None:
+    print(f"{proposal.repository}#{proposal.number} [proposal]")
+    print(f"Branch: {proposal.branch}")
+    print(f"Candidate status: {proposal.candidate_status}")
+    print(f"Run status: {proposal.run_status}")
+    print(f"Model: {proposal.model_provider}/{proposal.model_name}")
+    print("Proposal:")
+    for line in proposal.content.rstrip().splitlines():
+        print(f"  {line}")
 
 
 if __name__ == "__main__":

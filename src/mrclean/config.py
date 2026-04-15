@@ -44,7 +44,15 @@ class MrCleanConfig:
         config_path = Path(path)
         with config_path.open("rb") as handle:
             raw = tomllib.load(handle)
+        return cls._from_raw(raw)
 
+    @classmethod
+    def from_toml_text(cls, text: str) -> "MrCleanConfig":
+        raw = tomllib.loads(text)
+        return cls._from_raw(raw)
+
+    @classmethod
+    def _from_raw(cls, raw: dict[str, object]) -> "MrCleanConfig":
         model_section = raw.get("model", {})
         policy_section = raw.get("policy", {})
         repository_sections = raw.get("repositories", [])
@@ -138,4 +146,3 @@ def _parse_repository(raw: dict[str, object]) -> RepositoryConfig:
         labels=labels,
         monitored_checks=monitored_checks,
     )
-

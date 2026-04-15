@@ -34,8 +34,9 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/watch.py`: polling queue that emits appeared, updated, and resolved events
 - `src/mrclean/dispatch.py`: dry-run executor that turns queue items into guarded action candidates
 - `src/mrclean/runner.py`: safe local runner for inspect and prep commands from dispatch candidates
+- `src/mrclean/proposals.py`: bounded edit proposal generation from prepared candidates
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, and `run` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, and `propose` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -56,6 +57,8 @@ PYTHONPATH=src python -m mrclean watch mrclean.toml.example \
 PYTHONPATH=src python -m mrclean dispatch mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 PYTHONPATH=src python -m mrclean run mrclean.toml.example \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub
+PYTHONPATH=src python -m mrclean propose mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 ```
 
@@ -86,6 +89,12 @@ mismatch before any real write step exists.
 results, such as GitHub inspection and local diff/status gathering. Actions
 like `push_commit` and `close_pr` remain blocked behind policy and are never run
 by this local runner.
+
+`propose` builds on `run`: it gathers the same safe local context, then asks the
+configured model client for a bounded edit proposal. If `provider = "openai"`
+and `OPENAI_API_KEY` is present, MrClean uses the installed OpenAI client.
+Otherwise it falls back to the deterministic stub client and still returns a
+proposal without disabling any protections.
 
 ## Design stance
 
