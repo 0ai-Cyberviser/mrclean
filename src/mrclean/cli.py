@@ -15,7 +15,14 @@ from .intents import EditIntent, IntentGenerator
 from .materialize import IntentMaterializer, MaterializedIntent
 from .monitor import RepositoryScanner, ScanResult
 from .policies import PolicyEngine
-from .previews import DraftPreviewer, PreviewBundle, dump_preview_bundles, load_preview_bundles, preview_bundle_to_payload
+from .previews import (
+    DraftPreviewer,
+    PreviewBundle,
+    dump_preview_bundles,
+    load_preview_artifact,
+    preview_bundle_to_payload,
+    verify_preview_artifact,
+)
 from .proposals import Proposal, ProposalGenerator
 from .runner import ActionExecution, LocalRunner, RunSession
 from .watch import RepositoryWatcher, WatchEvent
@@ -514,6 +521,7 @@ def _run_draft(args: argparse.Namespace) -> int:
 
 
 def _run_preview(args: argparse.Namespace) -> int:
+    config = MrCleanConfig.from_toml(Path(args.config))
     drafts, previews = _build_preview_batch(args)
     if args.pr is not None and not previews:
         print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
@@ -522,8 +530,13 @@ def _run_preview(args: argparse.Namespace) -> int:
         print("No preview candidates.")
         return 0
 
+    artifact = None
     if args.output:
-        dump_preview_bundles(Path(args.output), previews)
+        artifact = dump_preview_bundles(
+            Path(args.output),
+            previews,
+            key_env=config.policy.artifact_signing_key_env,
+        )
 
     if args.json:
         payload = [preview_bundle_to_payload(item) for item in previews]
@@ -534,7 +547,16 @@ def _run_preview(args: argparse.Namespace) -> int:
         _print_preview_bundle(item)
         print()
     if args.output:
-        print(f"Wrote preview artifact to {args.output}")
+        if artifact is not None and artifact.signature is not None:
+            print(
+                f"Wrote signed preview artifact to {args.output} "
+                f"using {artifact.signature.key_env}"
+            )
+        else:
+            print(
+                f"Wrote unsigned preview artifact to {args.output}. "
+                f"Set {config.policy.artifact_signing_key_env} to sign it."
+            )
     return 0
 
 
@@ -546,17 +568,28 @@ def _run_apply(args: argparse.Namespace) -> int:
         print("refusing to apply without --preview-file", file=sys.stderr)
         return 1
 
+    config = MrCleanConfig.from_toml(Path(args.config))
+
     try:
-        previews = load_preview_bundles(Path(args.preview_file))
+        artifact = load_preview_artifact(Path(args.preview_file))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"failed to load preview artifact: {exc}", file=sys.stderr)
         return 1
+    signature_error = verify_preview_artifact(
+        artifact,
+        key_env=config.policy.artifact_signing_key_env,
+        require_signature=config.policy.require_signed_preview_artifacts,
+    )
+    if signature_error is not None:
+        print(f"preview artifact verification failed: {signature_error}", file=sys.stderr)
+        return 1
+
+    previews = artifact.bundles
     if not previews:
         print("No apply candidates.")
         return 0
 
-    config = MrCleanConfig.from_toml(Path(args.config))
-    applier = DraftApplier(PolicyEngine(config.policy))
+    applier = DraftApplier(PolicyEngine(config.policy), config=config)
     transactions = [applier.apply(preview) for preview in previews]
     exit_code = 0 if all(item.status == "applied" for item in transactions) else 1
 

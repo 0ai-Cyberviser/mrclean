@@ -18,6 +18,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.model.name, "gpt-5.4-mini")
         self.assertEqual(len(config.repositories), 2)
         self.assertFalse(config.policy.allow_local_apply)
+        self.assertTrue(config.policy.require_signed_preview_artifacts)
+        self.assertEqual(config.policy.artifact_signing_key_env, "MRCLEAN_ARTIFACT_SIGNING_KEY")
         self.assertEqual(
             config.get_repository("0ai-Cyberviser/Hancock").monitored_checks,
             ("build-linux", "oss-fuzz", "cifuzz", "fuzzing"),
@@ -33,6 +35,26 @@ name = "gpt-5.4-mini"
 [policy]
 allow_push = false
 allow_force_push = true
+
+[[repositories]]
+name = "example/repo"
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "bad.toml"
+            path.write_text(invalid, encoding="utf-8")
+            with self.assertRaises(ValueError):
+                MrCleanConfig.from_toml(path)
+
+    def test_missing_signing_key_env_is_rejected_when_signatures_are_required(self) -> None:
+        invalid = """name = "mrclean"
+
+[model]
+provider = "openai"
+name = "gpt-5.4-mini"
+
+[policy]
+require_signed_preview_artifacts = true
+artifact_signing_key_env = ""
 
 [[repositories]]
 name = "example/repo"

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+from os import environ
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from mrclean.drafts import DraftBundle, DraftOperation
-from mrclean.previews import DraftPreviewer, dump_preview_bundles, load_preview_bundles
+from mrclean.previews import (
+    DraftPreviewer,
+    dump_preview_bundles,
+    load_preview_artifact,
+    load_preview_bundles,
+    verify_preview_artifact,
+)
 
 
 def _draft(repo_path: Path, *, expected_sha256: str | None = None) -> DraftBundle:
@@ -79,6 +87,55 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(loaded[0].operations[0].requested_operation, "modify")
             self.assertEqual(loaded[0].operations[0].content, "pytest\npytest-cov\n")
             self.assertEqual(loaded[0].operations[0].content_sha256, preview.operations[0].content_sha256)
+
+    def test_signed_preview_artifact_round_trip_verifies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _draft(Path(tmpdir))
+            preview = DraftPreviewer().preview(bundle)
+            artifact_path = Path(tmpdir) / "signed-preview.json"
+
+            with patch.dict(environ, {"MRCLEAN_ARTIFACT_SIGNING_KEY": "top-secret"}, clear=False):
+                artifact = dump_preview_bundles(
+                    artifact_path,
+                    [preview],
+                    key_env="MRCLEAN_ARTIFACT_SIGNING_KEY",
+                )
+                loaded = load_preview_artifact(artifact_path)
+                verification = verify_preview_artifact(
+                    loaded,
+                    key_env="MRCLEAN_ARTIFACT_SIGNING_KEY",
+                    require_signature=True,
+                )
+
+            self.assertIsNotNone(artifact.signature)
+            self.assertIsNotNone(loaded.signature)
+            self.assertIsNone(verification)
+
+    def test_tampered_preview_artifact_signature_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _draft(Path(tmpdir))
+            preview = DraftPreviewer().preview(bundle)
+            artifact_path = Path(tmpdir) / "signed-preview.json"
+
+            with patch.dict(environ, {"MRCLEAN_ARTIFACT_SIGNING_KEY": "top-secret"}, clear=False):
+                dump_preview_bundles(
+                    artifact_path,
+                    [preview],
+                    key_env="MRCLEAN_ARTIFACT_SIGNING_KEY",
+                )
+
+                payload = artifact_path.read_text(encoding="utf-8")
+                payload = payload.replace("pytest-cov", "pytest-xdist", 1)
+                artifact_path.write_text(payload, encoding="utf-8")
+
+                loaded = load_preview_artifact(artifact_path)
+                verification = verify_preview_artifact(
+                    loaded,
+                    key_env="MRCLEAN_ARTIFACT_SIGNING_KEY",
+                    require_signature=True,
+                )
+
+            self.assertEqual(verification, "preview artifact signature verification failed")
 
 
 if __name__ == "__main__":

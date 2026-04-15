@@ -7,9 +7,10 @@ import tempfile
 import unittest
 
 from mrclean.apply import DraftApplier
-from mrclean.config import PolicyConfig
+from mrclean.config import ModelConfig, MrCleanConfig, PolicyConfig, RepositoryConfig
 from mrclean.policies import PolicyEngine
 from mrclean.previews import PreviewBundle, PreviewOperation
+from mrclean.workspace import WorkspaceSnapshot
 
 
 def _write_preview(repo_path: Path, *, expected_sha256: str | None = None) -> PreviewBundle:
@@ -46,11 +47,40 @@ def _write_preview(repo_path: Path, *, expected_sha256: str | None = None) -> Pr
     )
 
 
+def _config(repo_path: Path) -> MrCleanConfig:
+    return MrCleanConfig(
+        name="mrclean",
+        model=ModelConfig(provider="stub", name="fake-model"),
+        policy=PolicyConfig(dry_run=False, allow_local_apply=True),
+        repositories=(
+            RepositoryConfig(
+                name="example/repo",
+                base_branch="main",
+                local_path=str(repo_path),
+            ),
+        ),
+    )
+
+
+class FakeWorkspaceInspector:
+    def __init__(self, snapshot: WorkspaceSnapshot) -> None:
+        self.snapshot = snapshot
+
+    def inspect(self, repository, pr_branch):
+        return self.snapshot
+
+
 class ApplyTests(unittest.TestCase):
     def test_applier_writes_file_when_policy_allows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             preview = _write_preview(Path(tmpdir))
-            applier = DraftApplier(PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)))
+            applier = DraftApplier(
+                PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)),
+                config=_config(Path(tmpdir)),
+                workspace=FakeWorkspaceInspector(
+                    WorkspaceSnapshot(path=tmpdir, current_branch="fix-ci", notes=())
+                ),
+            )
 
             result = applier.apply(preview)
 
@@ -62,7 +92,13 @@ class ApplyTests(unittest.TestCase):
     def test_applier_blocks_when_hash_precondition_no_longer_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             preview = _write_preview(Path(tmpdir), expected_sha256="deadbeef")
-            applier = DraftApplier(PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)))
+            applier = DraftApplier(
+                PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)),
+                config=_config(Path(tmpdir)),
+                workspace=FakeWorkspaceInspector(
+                    WorkspaceSnapshot(path=tmpdir, current_branch="fix-ci", notes=())
+                ),
+            )
 
             result = applier.apply(preview)
 
@@ -125,7 +161,13 @@ class ApplyTests(unittest.TestCase):
                         raise RuntimeError("boom")
                     return super()._apply_operation(operation, target)
 
-            applier = ExplodingApplier(PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)))
+            applier = ExplodingApplier(
+                PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)),
+                config=_config(root),
+                workspace=FakeWorkspaceInspector(
+                    WorkspaceSnapshot(path=tmpdir, current_branch="fix-ci", notes=())
+                ),
+            )
 
             result = applier.apply(preview)
 
@@ -166,13 +208,78 @@ class ApplyTests(unittest.TestCase):
                 validation=(),
                 risks=(),
             )
-            applier = DraftApplier(PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)))
+            applier = DraftApplier(
+                PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)),
+                config=_config(root),
+                workspace=FakeWorkspaceInspector(
+                    WorkspaceSnapshot(path=tmpdir, current_branch="fix-ci", notes=())
+                ),
+            )
 
             result = applier.apply(preview)
 
             self.assertEqual(result.status, "applied")
             mode = os.stat(target).st_mode & 0o777
             self.assertEqual(mode, 0o755)
+
+    def test_applier_blocks_when_workspace_branch_does_not_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            preview = _write_preview(Path(tmpdir))
+            applier = DraftApplier(
+                PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)),
+                config=_config(Path(tmpdir)),
+                workspace=FakeWorkspaceInspector(
+                    WorkspaceSnapshot(path=tmpdir, current_branch="main", notes=())
+                ),
+            )
+
+            result = applier.apply(preview)
+
+            self.assertEqual(result.status, "blocked")
+            self.assertIn("expected 'fix-ci'", result.operations[0].validation_reason)
+
+    def test_applier_blocks_when_preview_target_escapes_repository_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            preview = _write_preview(Path(tmpdir))
+            outside = Path(tmpdir).parent / "outside.txt"
+            preview = PreviewBundle(
+                repository=preview.repository,
+                number=preview.number,
+                branch=preview.branch,
+                status=preview.status,
+                summary=preview.summary,
+                operations=(
+                    PreviewOperation(
+                        path="../outside.txt",
+                        requested_operation="modify",
+                        action="write_file",
+                        absolute_path=str(outside),
+                        status="ready",
+                        validation_reason="ready",
+                        expected_sha256=preview.operations[0].expected_sha256,
+                        current_sha256=preview.operations[0].current_sha256,
+                        current_exists=True,
+                        diff=preview.operations[0].diff,
+                        diff_bytes=preview.operations[0].diff_bytes,
+                        content_sha256=preview.operations[0].content_sha256,
+                        content=preview.operations[0].content,
+                    ),
+                ),
+                validation=preview.validation,
+                risks=preview.risks,
+            )
+            applier = DraftApplier(
+                PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True)),
+                config=_config(Path(tmpdir)),
+                workspace=FakeWorkspaceInspector(
+                    WorkspaceSnapshot(path=tmpdir, current_branch="fix-ci", notes=())
+                ),
+            )
+
+            result = applier.apply(preview)
+
+            self.assertEqual(result.status, "blocked")
+            self.assertIn("escapes the repository root", result.operations[0].validation_reason)
 
 
 if __name__ == "__main__":

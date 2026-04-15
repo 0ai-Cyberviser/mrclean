@@ -13,9 +13,35 @@ from unittest.mock import patch
 
 from mrclean.cli import main
 from mrclean.monitor import ScanResult
+from mrclean.previews import PreviewBundle, PreviewOperation, dump_preview_bundles
 from mrclean.watch import WatchEvent
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _example_config(local_path: str = "/repo", *, require_signature: bool = True) -> str:
+    return f"""name = "mrclean"
+
+[model]
+provider = "openai"
+name = "gpt-5.4-mini"
+
+[policy]
+dry_run = false
+allow_local_apply = true
+allow_push = false
+allow_close_stale_prs = false
+allow_force_push = false
+require_signed_preview_artifacts = {"true" if require_signature else "false"}
+artifact_signing_key_env = "MRCLEAN_ARTIFACT_SIGNING_KEY"
+max_patch_files = 5
+protected_branches = ["main", "master"]
+
+[[repositories]]
+name = "example/repo"
+base_branch = "main"
+local_path = "{local_path}"
+"""
 
 
 class CliTests(unittest.TestCase):
@@ -707,6 +733,7 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "mrclean.toml"
             config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+            output_path = Path(tmpdir) / "reviewed-preview.json"
 
             class FakeScanner:
                 def __init__(self, config) -> None:
@@ -896,19 +923,33 @@ class CliTests(unittest.TestCase):
                             with patch("mrclean.cli.IntentMaterializer", FakeMaterializer):
                                 with patch("mrclean.cli.DraftGenerator", FakeDraftGenerator):
                                     with patch("mrclean.cli.DraftPreviewer", return_value=FakePreviewer()):
-                                        with redirect_stdout(buffer):
-                                            result = main(["preview", str(config_path)])
+                                        with patch.dict(
+                                            os.environ,
+                                            {"MRCLEAN_ARTIFACT_SIGNING_KEY": "preview-secret"},
+                                            clear=False,
+                                        ):
+                                            with redirect_stdout(buffer):
+                                                result = main(
+                                                    [
+                                                        "preview",
+                                                        str(config_path),
+                                                        "--output",
+                                                        str(output_path),
+                                                    ]
+                                                )
 
             self.assertEqual(result, 0)
             output = buffer.getvalue()
             self.assertIn("example/repo#32 [preview]", output)
             self.assertIn("write_file requirements-dev.txt [ready]", output)
             self.assertIn("+++ b/requirements-dev.txt", output)
+            self.assertIn("Wrote signed preview artifact", output)
+            self.assertIn("\"signature\"", output_path.read_text(encoding="utf-8"))
 
     def test_apply_command_requires_execute_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "mrclean.toml"
-            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+            config_path.write_text(_example_config(), encoding="utf-8")
             preview_path = Path(tmpdir) / "preview.json"
             preview_path.write_text("[]", encoding="utf-8")
 
@@ -922,7 +963,7 @@ class CliTests(unittest.TestCase):
     def test_apply_command_requires_preview_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "mrclean.toml"
-            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+            config_path.write_text(_example_config(), encoding="utf-8")
 
             stderr = StringIO()
             with redirect_stdout(StringIO()), patch("sys.stderr", stderr):
@@ -934,44 +975,47 @@ class CliTests(unittest.TestCase):
     def test_apply_command_renders_apply_batch_from_preview_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "mrclean.toml"
-            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+            config_path.write_text(_example_config(require_signature=False), encoding="utf-8")
             preview_path = Path(tmpdir) / "preview.json"
             preview_path.write_text(
                 json.dumps(
-                    [
-                        {
-                            "repository": "example/repo",
-                            "number": 32,
-                            "branch": "fix-ci",
-                            "status": "ready",
-                            "summary": "Update the dependency file narrowly.",
-                            "operations": [
-                                {
-                                    "path": "requirements-dev.txt",
-                                    "requested_operation": "modify",
-                                    "action": "write_file",
-                                    "absolute_path": "/repo/requirements-dev.txt",
-                                    "status": "ready",
-                                    "validation_reason": "ready",
-                                    "expected_sha256": "abc123",
-                                    "current_sha256": "abc123",
-                                    "current_exists": True,
-                                    "diff": "--- a/requirements-dev.txt\n+++ b/requirements-dev.txt\n@@ -1 +1,2 @@\n pytest\n+pytest-cov\n",
-                                    "diff_bytes": 88,
-                                    "content_sha256": "def456",
-                                    "content": "pytest\npytest-cov\n",
-                                }
-                            ],
-                            "validation": ["pytest -q"],
-                            "risks": ["Dependency updates can affect CI resolution."],
-                        }
-                    ]
+                    {
+                        "artifact_type": "mrclean.preview.v1",
+                        "bundles": [
+                            {
+                                "repository": "example/repo",
+                                "number": 32,
+                                "branch": "fix-ci",
+                                "status": "ready",
+                                "summary": "Update the dependency file narrowly.",
+                                "operations": [
+                                    {
+                                        "path": "requirements-dev.txt",
+                                        "requested_operation": "modify",
+                                        "action": "write_file",
+                                        "absolute_path": "/repo/requirements-dev.txt",
+                                        "status": "ready",
+                                        "validation_reason": "ready",
+                                        "expected_sha256": "abc123",
+                                        "current_sha256": "abc123",
+                                        "current_exists": True,
+                                        "diff": "--- a/requirements-dev.txt\n+++ b/requirements-dev.txt\n@@ -1 +1,2 @@\n pytest\n+pytest-cov\n",
+                                        "diff_bytes": 88,
+                                        "content_sha256": "def456",
+                                        "content": "pytest\npytest-cov\n",
+                                    }
+                                ],
+                                "validation": ["pytest -q"],
+                                "risks": ["Dependency updates can affect CI resolution."],
+                            }
+                        ],
+                    }
                 ),
                 encoding="utf-8",
             )
 
             class FakeApplier:
-                def __init__(self, policy) -> None:
+                def __init__(self, policy, *, config=None, workspace=None) -> None:
                     self.policy = policy
 
                 def apply(self, preview):
@@ -1014,26 +1058,31 @@ class CliTests(unittest.TestCase):
     def test_apply_command_returns_nonzero_for_blocked_transaction(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "mrclean.toml"
-            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+            config_path.write_text(_example_config(require_signature=False), encoding="utf-8")
             preview_path = Path(tmpdir) / "preview.json"
             preview_path.write_text(
                 json.dumps(
                     {
-                        "repository": "example/repo",
-                        "number": 32,
-                        "branch": "fix-ci",
-                        "status": "blocked",
-                        "summary": "blocked",
-                        "operations": [],
-                        "validation": [],
-                        "risks": ["hash mismatch"],
+                        "artifact_type": "mrclean.preview.v1",
+                        "bundles": [
+                            {
+                                "repository": "example/repo",
+                                "number": 32,
+                                "branch": "fix-ci",
+                                "status": "blocked",
+                                "summary": "blocked",
+                                "operations": [],
+                                "validation": [],
+                                "risks": ["hash mismatch"],
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
             )
 
             class FakeApplier:
-                def __init__(self, policy) -> None:
+                def __init__(self, policy, *, config=None, workspace=None) -> None:
                     self.policy = policy
 
                 def apply(self, preview):
@@ -1054,6 +1103,91 @@ class CliTests(unittest.TestCase):
                 result = main(["apply", str(config_path), "--preview-file", str(preview_path), "--execute", "--json"])
 
             self.assertEqual(result, 1)
+
+    def test_apply_command_rejects_unsigned_artifact_when_signatures_are_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text(_example_config(require_signature=True), encoding="utf-8")
+            preview_path = Path(tmpdir) / "preview.json"
+            preview_path.write_text(
+                json.dumps(
+                    {
+                        "artifact_type": "mrclean.preview.v1",
+                        "bundles": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), patch("sys.stderr", stderr):
+                result = main(["apply", str(config_path), "--preview-file", str(preview_path), "--execute"])
+
+            self.assertEqual(result, 1)
+            self.assertIn("preview artifact is unsigned", stderr.getvalue())
+
+    def test_apply_command_accepts_signed_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text(_example_config(require_signature=True), encoding="utf-8")
+            preview_path = Path(tmpdir) / "preview.json"
+
+            preview = PreviewBundle(
+                repository="example/repo",
+                number=32,
+                branch="fix-ci",
+                status="ready",
+                summary="Update the dependency file narrowly.",
+                operations=(
+                    PreviewOperation(
+                        path="requirements-dev.txt",
+                        requested_operation="modify",
+                        action="write_file",
+                        absolute_path="/repo/requirements-dev.txt",
+                        status="ready",
+                        validation_reason="ready",
+                        expected_sha256="abc123",
+                        current_sha256="abc123",
+                        current_exists=True,
+                        diff="--- a/requirements-dev.txt\n+++ b/requirements-dev.txt\n@@ -1 +1,2 @@\n pytest\n+pytest-cov\n",
+                        diff_bytes=88,
+                        content_sha256="def456",
+                        content="pytest\npytest-cov\n",
+                    ),
+                ),
+                validation=("pytest -q",),
+                risks=("Dependency updates can affect CI resolution.",),
+            )
+            with patch.dict(os.environ, {"MRCLEAN_ARTIFACT_SIGNING_KEY": "preview-secret"}, clear=False):
+                dump_preview_bundles(
+                    preview_path,
+                    [preview],
+                    key_env="MRCLEAN_ARTIFACT_SIGNING_KEY",
+                )
+
+                class FakeApplier:
+                    def __init__(self, policy, *, config=None, workspace=None) -> None:
+                        self.policy = policy
+                        self.config = config
+
+                    def apply(self, preview):
+                        from mrclean.apply import ApplyTransaction
+
+                        return ApplyTransaction(
+                            repository=preview.repository,
+                            number=preview.number,
+                            branch=preview.branch,
+                            status="applied",
+                            summary=preview.summary,
+                            operations=(),
+                            validation=preview.validation,
+                            risks=preview.risks,
+                        )
+
+                with patch("mrclean.cli.DraftApplier", FakeApplier):
+                    result = main(["apply", str(config_path), "--preview-file", str(preview_path), "--execute", "--json"])
+
+            self.assertEqual(result, 0)
 
 
 if __name__ == "__main__":

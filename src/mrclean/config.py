@@ -20,6 +20,8 @@ class PolicyConfig:
     allow_push: bool = False
     allow_close_stale_prs: bool = False
     allow_force_push: bool = False
+    require_signed_preview_artifacts: bool = True
+    artifact_signing_key_env: str = "MRCLEAN_ARTIFACT_SIGNING_KEY"
     max_patch_files: int = 5
     protected_branches: tuple[str, ...] = ("main", "master")
 
@@ -71,6 +73,12 @@ class MrCleanConfig:
             allow_push=bool(policy_section.get("allow_push", False)),
             allow_close_stale_prs=bool(policy_section.get("allow_close_stale_prs", False)),
             allow_force_push=bool(policy_section.get("allow_force_push", False)),
+            require_signed_preview_artifacts=bool(
+                policy_section.get("require_signed_preview_artifacts", True)
+            ),
+            artifact_signing_key_env=str(
+                policy_section.get("artifact_signing_key_env", "MRCLEAN_ARTIFACT_SIGNING_KEY")
+            ),
             max_patch_files=int(policy_section.get("max_patch_files", 5)),
             protected_branches=tuple(policy_section.get("protected_branches", ("main", "master"))),
         )
@@ -79,6 +87,10 @@ class MrCleanConfig:
             raise ValueError("policy.max_patch_files must be >= 1")
         if policy.allow_force_push and not policy.allow_push:
             raise ValueError("policy.allow_force_push requires policy.allow_push")
+        if policy.require_signed_preview_artifacts and not policy.artifact_signing_key_env.strip():
+            raise ValueError(
+                "policy.artifact_signing_key_env must be set when signed preview artifacts are required"
+            )
 
         repositories = tuple(_parse_repository(item) for item in repository_sections)
         if not repositories:
@@ -113,6 +125,8 @@ allow_local_apply = false
 allow_push = false
 allow_close_stale_prs = false
 allow_force_push = false
+require_signed_preview_artifacts = true
+artifact_signing_key_env = "MRCLEAN_ARTIFACT_SIGNING_KEY"
 max_patch_files = 5
 protected_branches = ["main", "master"]
 

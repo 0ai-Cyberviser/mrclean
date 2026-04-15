@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 import tempfile
 
+from .config import MrCleanConfig, RepositoryConfig
 from .policies import PlannedAction, PolicyEngine, PolicyViolation
 from .previews import PreviewBundle, PreviewOperation
+from .workspace import GitWorkspaceInspector
 
 
 @dataclass(slots=True)
@@ -44,8 +46,16 @@ class _BackupEntry:
 
 
 class DraftApplier:
-    def __init__(self, policy: PolicyEngine) -> None:
+    def __init__(
+        self,
+        policy: PolicyEngine,
+        *,
+        config: MrCleanConfig | None = None,
+        workspace: GitWorkspaceInspector | None = None,
+    ) -> None:
         self.policy = policy
+        self.config = config
+        self.workspace = workspace or GitWorkspaceInspector()
 
     def apply(self, preview: PreviewBundle) -> ApplyTransaction:
         try:
@@ -64,6 +74,10 @@ class DraftApplier:
 
         if preview.status != "ready":
             return self._blocked_transaction(preview, "preview bundle is not ready")
+
+        scope_error = self._verify_repository_scope(preview)
+        if scope_error is not None:
+            return self._blocked_transaction(preview, scope_error)
 
         preflight = self._preflight(preview.operations)
         if isinstance(preflight, str):
@@ -221,9 +235,77 @@ class DraftApplier:
             risks=preview.risks + (reason,),
         )
 
+    def _verify_repository_scope(self, preview: PreviewBundle) -> str | None:
+        if self.config is None:
+            return "repository configuration is required for apply"
+
+        try:
+            repository = self.config.get_repository(preview.repository)
+        except KeyError:
+            return f"repository is not configured for apply: {preview.repository}"
+
+        if not repository.local_path:
+            return f"repository.local_path is not configured for {preview.repository}"
+
+        workspace_root = Path(repository.local_path)
+        if not workspace_root.exists():
+            return f"configured local_path does not exist for {preview.repository}"
+        if not workspace_root.is_dir():
+            return f"configured local_path is not a directory for {preview.repository}"
+
+        snapshot = self.workspace.inspect(repository, preview.branch)
+        if snapshot is None:
+            return f"workspace inspection returned no data for {preview.repository}"
+        if not snapshot.current_branch:
+            return f"could not determine local checkout branch for {preview.repository}"
+        if snapshot.notes:
+            return "; ".join(snapshot.notes)
+        if preview.branch and snapshot.current_branch != preview.branch:
+            return (
+                f"local checkout is on {snapshot.current_branch!r}, "
+                f"expected {preview.branch!r}"
+            )
+
+        root = workspace_root.resolve()
+        for operation in preview.operations:
+            path_error = _validate_operation_scope(repository, root, operation)
+            if path_error is not None:
+                return path_error
+        return None
+
 
 def _default_mode_for_content(content: str) -> int:
     return 0o755 if content.startswith("#!") else 0o644
+
+
+def _validate_operation_scope(
+    repository: RepositoryConfig,
+    workspace_root: Path,
+    operation: PreviewOperation,
+) -> str | None:
+    relative_path = Path(operation.path)
+    if relative_path.is_absolute():
+        return f"preview path must stay relative to the repository root: {operation.path}"
+    if any(part == ".." for part in relative_path.parts):
+        return f"preview path escapes the repository root: {operation.path}"
+
+    expected_target = (workspace_root / relative_path).resolve(strict=False)
+    actual_target = Path(operation.absolute_path).resolve(strict=False)
+
+    try:
+        actual_target.relative_to(workspace_root)
+    except ValueError:
+        return (
+            f"preview target escapes the configured repository root for "
+            f"{repository.name}: {operation.path}"
+        )
+
+    if actual_target != expected_target:
+        return (
+            f"preview target does not match repository.local_path + path for "
+            f"{operation.path}"
+        )
+    return None
 
 
 def _write_atomic(path: Path, data: bytes, *, mode: int | None) -> None:

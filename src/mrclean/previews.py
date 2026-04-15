@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import difflib
+import hmac
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from .drafts import DraftBundle, DraftOperation
+
+PREVIEW_ARTIFACT_TYPE = "mrclean.preview.v1"
+PREVIEW_SIGNATURE_ALGORITHM = "hmac-sha256"
 
 
 @dataclass(slots=True)
@@ -36,6 +41,19 @@ class PreviewBundle:
     operations: tuple[PreviewOperation, ...]
     validation: tuple[str, ...]
     risks: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class PreviewArtifactSignature:
+    algorithm: str
+    key_env: str
+    digest: str
+
+
+@dataclass(slots=True)
+class PreviewArtifact:
+    bundles: tuple[PreviewBundle, ...]
+    signature: PreviewArtifactSignature | None = None
 
 
 class DraftPreviewer:
@@ -231,15 +249,126 @@ def preview_bundle_from_payload(payload: dict[str, object]) -> PreviewBundle:
     )
 
 
-def dump_preview_bundles(path: Path, bundles: tuple[PreviewBundle, ...] | list[PreviewBundle]) -> None:
-    payload = [preview_bundle_to_payload(bundle) for bundle in bundles]
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+def preview_artifact_to_payload(artifact: PreviewArtifact) -> dict[str, object]:
+    payload = _unsigned_artifact_payload(artifact.bundles)
+    if artifact.signature is not None:
+        payload["signature"] = {
+            "algorithm": artifact.signature.algorithm,
+            "key_env": artifact.signature.key_env,
+            "digest": artifact.signature.digest,
+        }
+    return payload
+
+
+def preview_artifact_from_payload(payload: dict[str, object]) -> PreviewArtifact:
+    if payload.get("artifact_type") != PREVIEW_ARTIFACT_TYPE:
+        return PreviewArtifact(bundles=(preview_bundle_from_payload(payload),))
+
+    bundles_raw = payload.get("bundles", [])
+    if not isinstance(bundles_raw, list):
+        raise ValueError("preview artifact bundles must be a list")
+    bundles = tuple(
+        preview_bundle_from_payload(item)
+        for item in bundles_raw
+        if isinstance(item, dict)
+    )
+    signature_raw = payload.get("signature")
+    signature = None
+    if signature_raw is not None:
+        if not isinstance(signature_raw, dict):
+            raise ValueError("preview artifact signature must be an object")
+        signature = PreviewArtifactSignature(
+            algorithm=str(signature_raw.get("algorithm", "")),
+            key_env=str(signature_raw.get("key_env", "")),
+            digest=str(signature_raw.get("digest", "")),
+        )
+    return PreviewArtifact(bundles=bundles, signature=signature)
+
+
+def dump_preview_bundles(
+    path: Path,
+    bundles: tuple[PreviewBundle, ...] | list[PreviewBundle],
+    *,
+    key_env: str | None = None,
+) -> PreviewArtifact:
+    artifact = PreviewArtifact(bundles=tuple(bundles))
+    if key_env:
+        artifact.signature = _sign_preview_artifact(artifact.bundles, key_env)
+    path.write_text(json.dumps(preview_artifact_to_payload(artifact), indent=2), encoding="utf-8")
+    return artifact
+
+
+def load_preview_artifact(path: Path) -> PreviewArtifact:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, list):
+        return PreviewArtifact(
+            bundles=tuple(preview_bundle_from_payload(item) for item in raw if isinstance(item, dict))
+        )
+    if isinstance(raw, dict):
+        return preview_artifact_from_payload(raw)
+    raise ValueError("preview artifact must be a JSON object or list")
 
 
 def load_preview_bundles(path: Path) -> tuple[PreviewBundle, ...]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        return (preview_bundle_from_payload(raw),)
-    if not isinstance(raw, list):
-        raise ValueError("preview artifact must be a JSON object or list")
-    return tuple(preview_bundle_from_payload(item) for item in raw if isinstance(item, dict))
+    return load_preview_artifact(path).bundles
+
+
+def verify_preview_artifact(
+    artifact: PreviewArtifact,
+    *,
+    key_env: str,
+    require_signature: bool,
+) -> str | None:
+    if artifact.signature is None:
+        if require_signature:
+            return "preview artifact is unsigned"
+        return None
+
+    signature = artifact.signature
+    if signature.algorithm != PREVIEW_SIGNATURE_ALGORITHM:
+        return f"unsupported preview artifact signature algorithm: {signature.algorithm!r}"
+    if signature.key_env != key_env:
+        return (
+            f"preview artifact was signed for {signature.key_env!r}, "
+            f"expected {key_env!r}"
+        )
+
+    key = os.getenv(key_env)
+    if not key:
+        return f"artifact signing key environment variable {key_env!r} is not set"
+
+    expected = _sign_preview_artifact(artifact.bundles, key_env)
+    if not hmac.compare_digest(signature.digest, expected.digest):
+        return "preview artifact signature verification failed"
+    return None
+
+
+def _unsigned_artifact_payload(bundles: tuple[PreviewBundle, ...] | list[PreviewBundle]) -> dict[str, object]:
+    return {
+        "artifact_type": PREVIEW_ARTIFACT_TYPE,
+        "bundles": [preview_bundle_to_payload(bundle) for bundle in bundles],
+    }
+
+
+def _sign_preview_artifact(
+    bundles: tuple[PreviewBundle, ...] | list[PreviewBundle],
+    key_env: str,
+) -> PreviewArtifactSignature | None:
+    key = os.getenv(key_env)
+    if not key:
+        return None
+    payload = _unsigned_artifact_payload(bundles)
+    digest = hmac.new(
+        key.encode("utf-8"),
+        _canonical_artifact_bytes(payload),
+        hashlib.sha256,
+    ).hexdigest()
+    return PreviewArtifactSignature(
+        algorithm=PREVIEW_SIGNATURE_ALGORITHM,
+        key_env=key_env,
+        digest=digest,
+    )
+
+
+def _canonical_artifact_bytes(payload: dict[str, object]) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")

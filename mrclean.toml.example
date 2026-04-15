@@ -12,6 +12,8 @@ allow_local_apply = false
 allow_push = false
 allow_close_stale_prs = false
 allow_force_push = false
+require_signed_preview_artifacts = true
+artifact_signing_key_env = "MRCLEAN_ARTIFACT_SIGNING_KEY"
 max_patch_files = 5
 protected_branches = ["main", "master"]
 

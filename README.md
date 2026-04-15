@@ -71,6 +71,7 @@ PYTHONPATH=src python -m mrclean materialize mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 PYTHONPATH=src python -m mrclean draft mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
+export MRCLEAN_ARTIFACT_SIGNING_KEY="replace-with-a-review-artifact-secret"
 PYTHONPATH=src python -m mrclean preview mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub \
   --output reviewed-preview.json
@@ -138,15 +139,20 @@ renders a unified diff only when the on-disk file still matches the validated
 draft input. If the file changed since draft generation, is missing, or is not
 UTF-8 text, MrClean blocks the preview instead of showing a stale diff. Use
 `--output` to save the exact reviewed preview artifact for a later apply step.
+If `policy.artifact_signing_key_env` is set in the config and that environment
+variable is present, MrClean signs the saved artifact with HMAC-SHA256 so apply
+can verify it was not altered after review.
 
 `apply` is the first real write path. It stays disabled by default and requires
 both `policy.allow_local_apply = true` and `policy.dry_run = false`, plus an
 explicit `--execute` flag on the CLI. It consumes a saved preview artifact via
-`--preview-file`, rechecks the expected pre-edit hash immediately before
-writing, uses atomic file replacement for writes, and rolls back partial local
-changes if a multi-file apply fails mid-transaction. It returns a nonzero exit
-code when the transaction is blocked or rolled back. It does not push, commit,
-or close PRs.
+`--preview-file`, verifies the artifact signature by default, rechecks the
+expected pre-edit hash immediately before writing, and confirms the current
+checkout still matches the configured repository root and target branch with no
+uncommitted changes. Writes use atomic file replacement, and MrClean rolls back
+partial local changes if a multi-file apply fails mid-transaction. It returns a
+nonzero exit code when the transaction is blocked or rolled back. It does not
+push, commit, or close PRs.
 
 ## Design stance
 
@@ -154,6 +160,7 @@ MrClean is intentionally conservative.
 
 - No force-push by default
 - No local apply by default
+- Signed preview artifacts required by default for real writes
 - No writes to protected branches
 - No PR closure unless explicitly enabled
 - No wide patches when the file count crosses policy limits
@@ -169,6 +176,7 @@ The protection model is part of the project, not an optional layer.
 - Pushes are disabled by default
 - Local apply is disabled by default
 - Force-push is disabled by default
+- Reviewed preview artifacts are signed and verified by default
 - Protected branches stay blocked by policy
 - PR closure is disabled unless explicitly enabled
 - Risky actions are blocked while dry-run is enabled
