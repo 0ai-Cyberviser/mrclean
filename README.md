@@ -36,8 +36,9 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/runner.py`: safe local runner for inspect and prep commands from dispatch candidates
 - `src/mrclean/proposals.py`: bounded edit proposal generation from prepared candidates
 - `src/mrclean/intents.py`: validated machine-readable edit intents for a later executor
+- `src/mrclean/materialize.py`: local intent resolution against the checkout with hashes and previews
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, `propose`, and `intent` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, `propose`, `intent`, and `materialize` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -63,6 +64,8 @@ PYTHONPATH=src python -m mrclean propose mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 PYTHONPATH=src python -m mrclean intent mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub --json
+PYTHONPATH=src python -m mrclean materialize mrclean.toml.example \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub
 ```
 
 `scan` requires GitHub CLI authentication via `gh auth login` or an existing
@@ -103,6 +106,13 @@ proposal without disabling any protections.
 validated edit schema. Paths must stay relative, operations are constrained to
 `modify`/`create`/`delete`, duplicate file targets are rejected, and the edit
 count still respects `policy.max_patch_files`.
+
+`materialize` validates those intents against the local checkout. It checks that
+the workspace still matches the target branch, resolves absolute file paths,
+verifies operation semantics (`modify`/`delete` require an existing file,
+`create` requires a missing file with an existing parent directory), blocks
+paths outside the current branch diff, and emits hashes plus previews without
+writing anything.
 
 ## Design stance
 

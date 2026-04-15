@@ -10,6 +10,7 @@ from .agent import CleanupSignal, MrCleanAgent
 from .config import MrCleanConfig, sample_config
 from .dispatch import DispatchCandidate, DispatchPlanner
 from .intents import EditIntent, IntentGenerator
+from .materialize import IntentMaterializer, MaterializedIntent
 from .monitor import RepositoryScanner, ScanResult
 from .policies import PolicyEngine
 from .proposals import Proposal, ProposalGenerator
@@ -133,6 +134,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="include healthy PRs in the queue instead of only pending or failing ones",
     )
 
+    materialize_parser = subparsers.add_parser(
+        "materialize",
+        help="resolve a generated intent against the local checkout without applying it",
+    )
+    materialize_parser.add_argument("config", help="path to mrclean TOML config")
+    materialize_parser.add_argument("--repo", action="append", default=[], help="limit materialization to a configured repo")
+    materialize_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
+    materialize_parser.add_argument("--limit", type=int, default=1, help="number of candidates to materialize when --pr is omitted")
+    materialize_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    materialize_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+
     return parser
 
 
@@ -158,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_propose(args)
     if args.command == "intent":
         return _run_intent(args)
+    if args.command == "materialize":
+        return _run_materialize(args)
 
     parser.error("unknown command")
     return 2
@@ -398,6 +416,45 @@ def _run_intent(args: argparse.Namespace) -> int:
 
     for intent in intents:
         _print_intent(intent)
+        print()
+    return 0
+
+
+def _run_materialize(args: argparse.Namespace) -> int:
+    config = MrCleanConfig.from_toml(Path(args.config))
+    scanner = RepositoryScanner(config)
+    results = scanner.scan(
+        repositories=tuple(args.repo),
+        include_healthy=bool(args.include_healthy),
+    )
+    planner = DispatchPlanner(PolicyEngine(config.policy))
+    candidates = planner.build(results)
+    candidate_map = {(candidate.repository, candidate.number): candidate for candidate in candidates}
+
+    runner = LocalRunner()
+    sessions = runner.run(candidates, pr_number=args.pr, limit=args.limit)
+    if args.pr is not None and not sessions:
+        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        return 1
+    if not sessions:
+        print("No materialization candidates.")
+        return 0
+
+    intent_generator = IntentGenerator(config)
+    materializer = IntentMaterializer(config)
+    materialized = []
+    for session in sessions:
+        candidate = candidate_map[(session.repository, session.number)]
+        intent = intent_generator.generate(candidate, session)
+        materialized.append(materializer.materialize(candidate, intent))
+
+    if args.json:
+        payload = [_materialized_intent_payload(item) for item in materialized]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    for item in materialized:
+        _print_materialized_intent(item)
         print()
     return 0
 
@@ -669,6 +726,72 @@ def _print_intent(intent: EditIntent) -> None:
         print("Risks:")
         for item in intent.risks:
             print(f"- {item}")
+
+
+def _materialized_intent_payload(item: MaterializedIntent) -> dict[str, object]:
+    return {
+        "repository": item.repository,
+        "number": item.number,
+        "branch": item.branch,
+        "workspace_path": item.workspace_path,
+        "workspace_branch": item.workspace_branch,
+        "workspace_ready": item.workspace_ready,
+        "workspace_reason": item.workspace_reason,
+        "status": item.status,
+        "summary": item.summary,
+        "edits": [
+            {
+                "path": edit.path,
+                "operation": edit.operation,
+                "summary": edit.summary,
+                "reason": edit.reason,
+                "absolute_path": edit.absolute_path,
+                "status": edit.status,
+                "validation_reason": edit.validation_reason,
+                "exists": edit.exists,
+                "in_branch_scope": edit.in_branch_scope,
+                "size_bytes": edit.size_bytes,
+                "sha256": edit.sha256,
+                "preview": edit.preview,
+            }
+            for edit in item.edits
+        ],
+        "validation": list(item.validation),
+        "risks": list(item.risks),
+    }
+
+
+def _print_materialized_intent(item: MaterializedIntent) -> None:
+    print(f"{item.repository}#{item.number} [materialized]")
+    print(f"Branch: {item.branch}")
+    print(f"Workspace: {item.workspace_path} (branch: {item.workspace_branch or 'unknown'})")
+    print(f"Workspace ready: {'yes' if item.workspace_ready else 'no'}")
+    print(f"Workspace reason: {item.workspace_reason}")
+    print(f"Status: {item.status}")
+    print(f"Summary: {item.summary}")
+    print("Edits:")
+    for edit in item.edits:
+        print(f"- {edit.operation} {edit.path} [{edit.status}]")
+        print(f"  validation: {edit.validation_reason}")
+        print(f"  absolute path: {edit.absolute_path}")
+        print(f"  in branch scope: {'yes' if edit.in_branch_scope else 'no'}")
+        if edit.exists:
+            print(f"  size: {edit.size_bytes} bytes")
+            print(f"  sha256: {edit.sha256}")
+            if edit.preview:
+                print("  preview:")
+                for line in edit.preview.rstrip().splitlines():
+                    print(f"    {line}")
+        else:
+            print("  preview: <file does not exist>")
+    if item.validation:
+        print("Validation:")
+        for check in item.validation:
+            print(f"- {check}")
+    if item.risks:
+        print("Risks:")
+        for risk in item.risks:
+            print(f"- {risk}")
 
 
 if __name__ == "__main__":
