@@ -9,6 +9,7 @@ import time
 from .agent import CleanupSignal, MrCleanAgent
 from .config import MrCleanConfig, sample_config
 from .dispatch import DispatchCandidate, DispatchPlanner
+from .intents import EditIntent, IntentGenerator
 from .monitor import RepositoryScanner, ScanResult
 from .policies import PolicyEngine
 from .proposals import Proposal, ProposalGenerator
@@ -117,6 +118,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="include healthy PRs in the queue instead of only pending or failing ones",
     )
 
+    intent_parser = subparsers.add_parser(
+        "intent",
+        help="generate a validated machine-readable edit intent from a runnable candidate",
+    )
+    intent_parser.add_argument("config", help="path to mrclean TOML config")
+    intent_parser.add_argument("--repo", action="append", default=[], help="limit intent generation to a configured repo")
+    intent_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
+    intent_parser.add_argument("--limit", type=int, default=1, help="number of candidates to generate intents for when --pr is omitted")
+    intent_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    intent_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+
     return parser
 
 
@@ -140,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_run(args)
     if args.command == "propose":
         return _run_propose(args)
+    if args.command == "intent":
+        return _run_intent(args)
 
     parser.error("unknown command")
     return 2
@@ -343,6 +361,43 @@ def _run_propose(args: argparse.Namespace) -> int:
 
     for proposal in proposals:
         _print_proposal(proposal)
+        print()
+    return 0
+
+
+def _run_intent(args: argparse.Namespace) -> int:
+    config = MrCleanConfig.from_toml(Path(args.config))
+    scanner = RepositoryScanner(config)
+    results = scanner.scan(
+        repositories=tuple(args.repo),
+        include_healthy=bool(args.include_healthy),
+    )
+    planner = DispatchPlanner(PolicyEngine(config.policy))
+    candidates = planner.build(results)
+    candidate_map = {(candidate.repository, candidate.number): candidate for candidate in candidates}
+
+    runner = LocalRunner()
+    sessions = runner.run(candidates, pr_number=args.pr, limit=args.limit)
+    if args.pr is not None and not sessions:
+        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        return 1
+    if not sessions:
+        print("No intent candidates.")
+        return 0
+
+    generator = IntentGenerator(config)
+    intents = []
+    for session in sessions:
+        candidate = candidate_map[(session.repository, session.number)]
+        intents.append(generator.generate(candidate, session))
+
+    if args.json:
+        payload = [_intent_payload(item) for item in intents]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    for intent in intents:
+        _print_intent(intent)
         print()
     return 0
 
@@ -568,6 +623,52 @@ def _print_proposal(proposal: Proposal) -> None:
     print("Proposal:")
     for line in proposal.content.rstrip().splitlines():
         print(f"  {line}")
+
+
+def _intent_payload(intent: EditIntent) -> dict[str, object]:
+    return {
+        "repository": intent.repository,
+        "number": intent.number,
+        "branch": intent.branch,
+        "candidate_status": intent.candidate_status,
+        "run_status": intent.run_status,
+        "summary": intent.summary,
+        "edits": [
+            {
+                "path": edit.path,
+                "operation": edit.operation,
+                "summary": edit.summary,
+                "reason": edit.reason,
+            }
+            for edit in intent.edits
+        ],
+        "validation": list(intent.validation),
+        "risks": list(intent.risks),
+        "model_provider": intent.model_provider,
+        "model_name": intent.model_name,
+        "raw": intent.raw,
+    }
+
+
+def _print_intent(intent: EditIntent) -> None:
+    print(f"{intent.repository}#{intent.number} [intent]")
+    print(f"Branch: {intent.branch}")
+    print(f"Candidate status: {intent.candidate_status}")
+    print(f"Run status: {intent.run_status}")
+    print(f"Model: {intent.model_provider}/{intent.model_name}")
+    print(f"Summary: {intent.summary}")
+    print("Edits:")
+    for edit in intent.edits:
+        print(f"- {edit.operation} {edit.path}: {edit.summary}")
+        print(f"  reason: {edit.reason}")
+    if intent.validation:
+        print("Validation:")
+        for item in intent.validation:
+            print(f"- {item}")
+    if intent.risks:
+        print("Risks:")
+        for item in intent.risks:
+            print(f"- {item}")
 
 
 if __name__ == "__main__":

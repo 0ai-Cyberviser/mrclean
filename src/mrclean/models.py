@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import os
 from typing import Any, Protocol
 
@@ -41,6 +42,7 @@ class StubModelClient:
         system_prompt = request.messages[0].content if request.messages else ""
         user_messages = [message.content.strip() for message in request.messages if message.role == "user"]
         summary = user_messages[-1] if user_messages else "No repo context provided."
+        first_changed_file = _extract_first_changed_file(summary)
         if "edit proposal" in system_prompt.lower():
             content = (
                 "Summary\n"
@@ -54,6 +56,29 @@ class StubModelClient:
                 "Risks\n"
                 f"- Stub output only. Review the captured context manually before editing.\n"
                 f"- Context source: {summary[:240]}"
+            )
+        elif "machine-readable edit intent" in system_prompt.lower():
+            content = json.dumps(
+                {
+                    "summary": "Narrow the fix to the active failure signal using the current branch scope.",
+                    "edits": [
+                        {
+                            "path": first_changed_file or "REVIEW_REQUIRED",
+                            "operation": "modify",
+                            "summary": "Inspect the current branch diff and update only the directly implicated file.",
+                            "reason": f"Stub output only. Derive the exact file from context: {summary[:180]}",
+                        }
+                    ],
+                    "validation": [
+                        "Re-run the smallest targeted tests or CI checks related to the failing signal.",
+                        "Confirm the local workspace still matches the PR branch before editing.",
+                    ],
+                    "risks": [
+                        "Stub output only. Verify the proposed file path against the current branch diff before applying.",
+                        "Do not widen scope beyond the files already implicated by the current branch diff.",
+                    ],
+                },
+                indent=2,
             )
         else:
             content = (
@@ -108,3 +133,15 @@ def build_model_client(provider: str, model_name: str, env: dict[str, str] | Non
     if normalized in {"stub", ""}:
         return StubModelClient(provider_hint=normalized or "stub")
     return StubModelClient(provider_hint=provider, reason=f"unsupported provider {provider!r} for model {model_name}")
+
+
+def _extract_first_changed_file(summary: str) -> str:
+    marker = "Changed files:"
+    for line in summary.splitlines():
+        if not line.startswith(marker):
+            continue
+        files = [item.strip() for item in line[len(marker) :].split(",")]
+        for file_path in files:
+            if file_path and file_path.lower() != "none":
+                return file_path
+    return ""

@@ -35,6 +35,37 @@ class ModelFactoryTests(unittest.TestCase):
         self.assertIn("Validation", response.content)
         self.assertIn("Risks", response.content)
 
+    def test_stub_model_returns_json_for_intent_prompt(self) -> None:
+        response = StubModelClient().complete(
+            CompletionRequest(
+                model="gpt-5.4-mini",
+                temperature=0.1,
+                max_tokens=1000,
+                messages=(
+                    ChatMessage(role="system", content="You are generating a machine-readable edit intent."),
+                    ChatMessage(role="user", content="Repository: example/repo"),
+                ),
+            )
+        )
+        self.assertIn('"summary"', response.content)
+        self.assertIn('"edits"', response.content)
+        self.assertIn('"validation"', response.content)
+        self.assertIn('REVIEW_REQUIRED', response.content)
+
+    def test_stub_model_prefers_first_changed_file_for_intent_prompt(self) -> None:
+        response = StubModelClient().complete(
+            CompletionRequest(
+                model="gpt-5.4-mini",
+                temperature=0.1,
+                max_tokens=1000,
+                messages=(
+                    ChatMessage(role="system", content="You are generating a machine-readable edit intent."),
+                    ChatMessage(role="user", content="Changed files: requirements-dev.txt, tests/test_api.py"),
+                ),
+            )
+        )
+        self.assertIn('"path": "requirements-dev.txt"', response.content)
+
 
 if __name__ == "__main__":
     unittest.main()
