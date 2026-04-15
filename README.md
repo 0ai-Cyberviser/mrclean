@@ -72,9 +72,10 @@ PYTHONPATH=src python -m mrclean materialize mrclean.toml.example \
 PYTHONPATH=src python -m mrclean draft mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 PYTHONPATH=src python -m mrclean preview mrclean.toml.example \
-  --repo 0ai-Cyberviser/CyberViser-ViserHub
+  --repo 0ai-Cyberviser/CyberViser-ViserHub \
+  --output reviewed-preview.json
 PYTHONPATH=src python -m mrclean apply my-write-enabled.toml \
-  --repo 0ai-Cyberviser/CyberViser-ViserHub --execute
+  --preview-file reviewed-preview.json --execute
 ```
 
 `scan` requires GitHub CLI authentication via `gh auth login` or an existing
@@ -135,14 +136,17 @@ safe to apply.
 current file hash against each draft bundle's expected precondition, then
 renders a unified diff only when the on-disk file still matches the validated
 draft input. If the file changed since draft generation, is missing, or is not
-UTF-8 text, MrClean blocks the preview instead of showing a stale diff.
+UTF-8 text, MrClean blocks the preview instead of showing a stale diff. Use
+`--output` to save the exact reviewed preview artifact for a later apply step.
 
 `apply` is the first real write path. It stays disabled by default and requires
 both `policy.allow_local_apply = true` and `policy.dry_run = false`, plus an
-explicit `--execute` flag on the CLI. It applies only ready preview bundles,
-rechecks the expected pre-edit hash immediately before writing, uses atomic file
-replacement for writes, and rolls back partial local changes if a multi-file
-apply fails mid-transaction. It does not push, commit, or close PRs.
+explicit `--execute` flag on the CLI. It consumes a saved preview artifact via
+`--preview-file`, rechecks the expected pre-edit hash immediately before
+writing, uses atomic file replacement for writes, and rolls back partial local
+changes if a multi-file apply fails mid-transaction. It returns a nonzero exit
+code when the transaction is blocked or rolled back. It does not push, commit,
+or close PRs.
 
 ## Design stance
 

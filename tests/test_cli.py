@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout
 from io import StringIO
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -869,6 +870,7 @@ class CliTests(unittest.TestCase):
                         operations=(
                             PreviewOperation(
                                 path="requirements-dev.txt",
+                                requested_operation="modify",
                                 action="write_file",
                                 absolute_path="/repo/requirements-dev.txt",
                                 status="ready",
@@ -878,6 +880,8 @@ class CliTests(unittest.TestCase):
                                 current_exists=True,
                                 diff="--- a/requirements-dev.txt\n+++ b/requirements-dev.txt\n@@ -1 +1,2 @@\n pytest\n+pytest-cov\n",
                                 diff_bytes=88,
+                                content_sha256="def456",
+                                content="pytest\npytest-cov\n",
                             ),
                         ),
                         validation=("pytest -q",),
@@ -905,201 +909,72 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "mrclean.toml"
             config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+            preview_path = Path(tmpdir) / "preview.json"
+            preview_path.write_text("[]", encoding="utf-8")
 
             stderr = StringIO()
             with redirect_stdout(StringIO()), patch("sys.stderr", stderr):
-                result = main(["apply", str(config_path)])
+                result = main(["apply", str(config_path), "--preview-file", str(preview_path)])
 
             self.assertEqual(result, 1)
             self.assertIn("--execute", stderr.getvalue())
 
-    def test_apply_command_renders_apply_batch(self) -> None:
+    def test_apply_command_requires_preview_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "mrclean.toml"
             config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
 
-            class FakeScanner:
-                def __init__(self, config) -> None:
-                    self.config = config
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), patch("sys.stderr", stderr):
+                result = main(["apply", str(config_path), "--execute"])
 
-                def scan(self, repositories=None, include_healthy=False):
-                    return ()
+            self.assertEqual(result, 1)
+            self.assertIn("--preview-file", stderr.getvalue())
 
-            class FakePlanner:
-                def __init__(self, policy) -> None:
-                    self.policy = policy
-
-                def build(self, results):
-                    from mrclean.dispatch import DispatchCandidate
-
-                    return (
-                        DispatchCandidate(
-                            repository="example/repo",
-                            number=32,
-                            title="Fix CI",
-                            url="https://github.com/example/repo/pull/32",
-                            branch="fix-ci",
-                            category="needs_attention",
-                            status="ready",
-                            priority=0,
-                            workspace_ready=True,
-                            workspace_reason="workspace matches PR branch",
-                            changed_files=("requirements-dev.txt",),
-                            actions=(),
-                        ),
-                    )
-
-            class FakeRunner:
-                def run(self, candidates, pr_number=None, limit=1):
-                    from mrclean.runner import RunSession
-
-                    return (
-                        RunSession(
-                            repository="example/repo",
-                            number=32,
-                            branch="fix-ci",
-                            candidate_status="ready",
-                            run_status="prepared",
-                            executions=(),
-                        ),
-                    )
-
-            class FakeIntentGenerator:
-                def __init__(self, config) -> None:
-                    self.config = config
-
-                def generate(self, candidate, session):
-                    from mrclean.intents import EditIntent, IntentEdit
-
-                    return EditIntent(
-                        repository="example/repo",
-                        number=32,
-                        branch="fix-ci",
-                        candidate_status="ready",
-                        run_status="prepared",
-                        summary="Fix the active CI issue narrowly.",
-                        edits=(
-                            IntentEdit(
-                                path="requirements-dev.txt",
-                                operation="modify",
-                                summary="Add pytest-cov.",
-                                reason="Coverage workflow requires it.",
-                            ),
-                        ),
-                        validation=("pytest -q",),
-                        risks=("Dependency updates can affect CI resolution.",),
-                        model_provider="fake",
-                        model_name="fake-model",
-                        raw={"provider": "fake"},
-                    )
-
-            class FakeMaterializer:
-                def __init__(self, config) -> None:
-                    self.config = config
-
-                def materialize(self, candidate, intent):
-                    from mrclean.materialize import MaterializedIntent, MaterializedEdit
-
-                    return MaterializedIntent(
-                        repository="example/repo",
-                        number=32,
-                        branch="fix-ci",
-                        workspace_path="/repo",
-                        workspace_branch="fix-ci",
-                        workspace_ready=True,
-                        workspace_reason="workspace matches intent branch",
-                        status="ready",
-                        summary="Fix the active CI issue narrowly.",
-                        edits=(
-                            MaterializedEdit(
-                                path="requirements-dev.txt",
-                                operation="modify",
-                                summary="Add pytest-cov.",
-                                reason="Coverage workflow requires it.",
-                                absolute_path="/repo/requirements-dev.txt",
-                                status="ready",
-                                validation_reason="ready",
-                                exists=True,
-                                in_branch_scope=True,
-                                size_bytes=10,
-                                sha256="abc123",
-                                preview="pytest\n",
-                            ),
-                        ),
-                        validation=("pytest -q",),
-                        risks=("Dependency updates can affect CI resolution.",),
-                    )
-
-            class FakeDraftGenerator:
-                def __init__(self, config) -> None:
-                    self.config = config
-
-                def generate(self, materialized):
-                    from mrclean.drafts import DraftBundle, DraftOperation
-
-                    return DraftBundle(
-                        repository="example/repo",
-                        number=32,
-                        branch="fix-ci",
-                        status="ready",
-                        summary="Update the dependency file narrowly.",
-                        operations=(
-                            DraftOperation(
-                                path="requirements-dev.txt",
-                                requested_operation="modify",
-                                action="write_file",
-                                summary="Add pytest-cov.",
-                                reason="Coverage workflow requires it.",
-                                absolute_path="/repo/requirements-dev.txt",
-                                status="ready",
-                                validation_reason="ready",
-                                expected_sha256="abc123",
-                                content_sha256="def456",
-                                content_bytes=18,
-                                content_preview="pytest\npytest-cov\n",
-                                content="pytest\npytest-cov\n",
-                            ),
-                        ),
-                        validation=("pytest -q",),
-                        risks=("Dependency updates can affect CI resolution.",),
-                        model_provider="fake",
-                        model_name="fake-model",
-                        raw={"provider": "fake"},
-                    )
-
-            class FakePreviewer:
-                def preview(self, draft):
-                    from mrclean.previews import PreviewBundle, PreviewOperation
-
-                    return PreviewBundle(
-                        repository="example/repo",
-                        number=32,
-                        branch="fix-ci",
-                        status="ready",
-                        summary="Update the dependency file narrowly.",
-                        operations=(
-                            PreviewOperation(
-                                path="requirements-dev.txt",
-                                action="write_file",
-                                absolute_path="/repo/requirements-dev.txt",
-                                status="ready",
-                                validation_reason="ready",
-                                expected_sha256="abc123",
-                                current_sha256="abc123",
-                                current_exists=True,
-                                diff="--- a/requirements-dev.txt\n+++ b/requirements-dev.txt\n@@ -1 +1,2 @@\n pytest\n+pytest-cov\n",
-                                diff_bytes=88,
-                            ),
-                        ),
-                        validation=("pytest -q",),
-                        risks=("Dependency updates can affect CI resolution.",),
-                    )
+    def test_apply_command_renders_apply_batch_from_preview_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+            preview_path = Path(tmpdir) / "preview.json"
+            preview_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "repository": "example/repo",
+                            "number": 32,
+                            "branch": "fix-ci",
+                            "status": "ready",
+                            "summary": "Update the dependency file narrowly.",
+                            "operations": [
+                                {
+                                    "path": "requirements-dev.txt",
+                                    "requested_operation": "modify",
+                                    "action": "write_file",
+                                    "absolute_path": "/repo/requirements-dev.txt",
+                                    "status": "ready",
+                                    "validation_reason": "ready",
+                                    "expected_sha256": "abc123",
+                                    "current_sha256": "abc123",
+                                    "current_exists": True,
+                                    "diff": "--- a/requirements-dev.txt\n+++ b/requirements-dev.txt\n@@ -1 +1,2 @@\n pytest\n+pytest-cov\n",
+                                    "diff_bytes": 88,
+                                    "content_sha256": "def456",
+                                    "content": "pytest\npytest-cov\n",
+                                }
+                            ],
+                            "validation": ["pytest -q"],
+                            "risks": ["Dependency updates can affect CI resolution."],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
 
             class FakeApplier:
                 def __init__(self, policy) -> None:
                     self.policy = policy
 
-                def apply(self, preview, *, draft_contents):
+                def apply(self, preview):
                     from mrclean.apply import ApplyTransaction, AppliedOperation
 
                     return ApplyTransaction(
@@ -1126,22 +1001,59 @@ class CliTests(unittest.TestCase):
                     )
 
             buffer = StringIO()
-            with patch("mrclean.cli.RepositoryScanner", FakeScanner):
-                with patch("mrclean.cli.DispatchPlanner", FakePlanner):
-                    with patch("mrclean.cli.LocalRunner", return_value=FakeRunner()):
-                        with patch("mrclean.cli.IntentGenerator", FakeIntentGenerator):
-                            with patch("mrclean.cli.IntentMaterializer", FakeMaterializer):
-                                with patch("mrclean.cli.DraftGenerator", FakeDraftGenerator):
-                                    with patch("mrclean.cli.DraftPreviewer", return_value=FakePreviewer()):
-                                        with patch("mrclean.cli.DraftApplier", FakeApplier):
-                                            with redirect_stdout(buffer):
-                                                result = main(["apply", str(config_path), "--execute"])
+            with patch("mrclean.cli.DraftApplier", FakeApplier):
+                with redirect_stdout(buffer):
+                    result = main(["apply", str(config_path), "--preview-file", str(preview_path), "--execute"])
 
             self.assertEqual(result, 0)
             output = buffer.getvalue()
             self.assertIn("example/repo#32 [apply]", output)
             self.assertIn("write_file requirements-dev.txt [applied]", output)
             self.assertIn("after sha256: def456", output)
+
+    def test_apply_command_returns_nonzero_for_blocked_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+            preview_path = Path(tmpdir) / "preview.json"
+            preview_path.write_text(
+                json.dumps(
+                    {
+                        "repository": "example/repo",
+                        "number": 32,
+                        "branch": "fix-ci",
+                        "status": "blocked",
+                        "summary": "blocked",
+                        "operations": [],
+                        "validation": [],
+                        "risks": ["hash mismatch"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class FakeApplier:
+                def __init__(self, policy) -> None:
+                    self.policy = policy
+
+                def apply(self, preview):
+                    from mrclean.apply import ApplyTransaction
+
+                    return ApplyTransaction(
+                        repository="example/repo",
+                        number=32,
+                        branch="fix-ci",
+                        status="blocked",
+                        summary="blocked",
+                        operations=(),
+                        validation=(),
+                        risks=("hash mismatch",),
+                    )
+
+            with patch("mrclean.cli.DraftApplier", FakeApplier):
+                result = main(["apply", str(config_path), "--preview-file", str(preview_path), "--execute", "--json"])
+
+            self.assertEqual(result, 1)
 
 
 if __name__ == "__main__":

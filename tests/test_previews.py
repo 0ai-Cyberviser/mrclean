@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from mrclean.drafts import DraftBundle, DraftOperation
-from mrclean.previews import DraftPreviewer
+from mrclean.previews import DraftPreviewer, dump_preview_bundles, load_preview_bundles
 
 
 def _draft(repo_path: Path, *, expected_sha256: str | None = None) -> DraftBundle:
@@ -65,6 +65,20 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(preview.status, "blocked")
             self.assertEqual(preview.operations[0].status, "blocked")
             self.assertIn("hash no longer matches", preview.operations[0].validation_reason)
+
+    def test_preview_artifact_round_trip_preserves_reviewed_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = _draft(Path(tmpdir))
+            preview = DraftPreviewer().preview(bundle)
+            artifact = Path(tmpdir) / "preview.json"
+
+            dump_preview_bundles(artifact, [preview])
+            loaded = load_preview_bundles(artifact)
+
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].operations[0].requested_operation, "modify")
+            self.assertEqual(loaded[0].operations[0].content, "pytest\npytest-cov\n")
+            self.assertEqual(loaded[0].operations[0].content_sha256, preview.operations[0].content_sha256)
 
 
 if __name__ == "__main__":

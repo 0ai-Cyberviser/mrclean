@@ -15,7 +15,7 @@ from .intents import EditIntent, IntentGenerator
 from .materialize import IntentMaterializer, MaterializedIntent
 from .monitor import RepositoryScanner, ScanResult
 from .policies import PolicyEngine
-from .previews import DraftPreviewer, PreviewBundle
+from .previews import DraftPreviewer, PreviewBundle, dump_preview_bundles, load_preview_bundles, preview_bundle_to_payload
 from .proposals import Proposal, ProposalGenerator
 from .runner import ActionExecution, LocalRunner, RunSession
 from .watch import RepositoryWatcher, WatchEvent
@@ -176,6 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
     preview_parser.add_argument("--limit", type=int, default=1, help="number of candidates to preview when --pr is omitted")
     preview_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    preview_parser.add_argument("--output", help="write the preview artifact JSON to this path")
     preview_parser.add_argument(
         "--include-healthy",
         action="store_true",
@@ -187,15 +188,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="apply a ready preview bundle to the local checkout with policy and hash checks",
     )
     apply_parser.add_argument("config", help="path to mrclean TOML config")
-    apply_parser.add_argument("--repo", action="append", default=[], help="limit apply to a configured repo")
-    apply_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
-    apply_parser.add_argument("--limit", type=int, default=1, help="number of candidates to apply when --pr is omitted")
+    apply_parser.add_argument("--preview-file", help="path to a saved preview artifact JSON file")
     apply_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
-    apply_parser.add_argument(
-        "--include-healthy",
-        action="store_true",
-        help="include healthy PRs in the queue instead of only pending or failing ones",
-    )
     apply_parser.add_argument(
         "--execute",
         action="store_true",
@@ -528,14 +522,19 @@ def _run_preview(args: argparse.Namespace) -> int:
         print("No preview candidates.")
         return 0
 
+    if args.output:
+        dump_preview_bundles(Path(args.output), previews)
+
     if args.json:
-        payload = [_preview_bundle_payload(item) for item in previews]
+        payload = [preview_bundle_to_payload(item) for item in previews]
         print(json.dumps(payload, indent=2))
         return 0
 
     for item in previews:
         _print_preview_bundle(item)
         print()
+    if args.output:
+        print(f"Wrote preview artifact to {args.output}")
     return 0
 
 
@@ -543,10 +542,14 @@ def _run_apply(args: argparse.Namespace) -> int:
     if not args.execute:
         print("refusing to apply without --execute", file=sys.stderr)
         return 1
+    if not args.preview_file:
+        print("refusing to apply without --preview-file", file=sys.stderr)
+        return 1
 
-    drafts, previews = _build_preview_batch(args)
-    if args.pr is not None and not previews:
-        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+    try:
+        previews = load_preview_bundles(Path(args.preview_file))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"failed to load preview artifact: {exc}", file=sys.stderr)
         return 1
     if not previews:
         print("No apply candidates.")
@@ -554,24 +557,18 @@ def _run_apply(args: argparse.Namespace) -> int:
 
     config = MrCleanConfig.from_toml(Path(args.config))
     applier = DraftApplier(PolicyEngine(config.policy))
-    transactions = []
-    for draft, preview in zip(drafts, previews):
-        draft_contents = {
-            operation.path: operation.content
-            for operation in draft.operations
-            if operation.action == "write_file"
-        }
-        transactions.append(applier.apply(preview, draft_contents=draft_contents))
+    transactions = [applier.apply(preview) for preview in previews]
+    exit_code = 0 if all(item.status == "applied" for item in transactions) else 1
 
     if args.json:
         payload = [_apply_transaction_payload(item) for item in transactions]
         print(json.dumps(payload, indent=2))
-        return 0
+        return exit_code
 
     for item in transactions:
         _print_apply_transaction(item)
         print()
-    return 0
+    return exit_code
 
 
 def _build_materialized_batch(args: argparse.Namespace) -> list[MaterializedIntent]:
@@ -1020,30 +1017,7 @@ def _print_draft_bundle(item: DraftBundle) -> None:
 
 
 def _preview_bundle_payload(item: PreviewBundle) -> dict[str, object]:
-    return {
-        "repository": item.repository,
-        "number": item.number,
-        "branch": item.branch,
-        "status": item.status,
-        "summary": item.summary,
-        "operations": [
-            {
-                "path": operation.path,
-                "action": operation.action,
-                "absolute_path": operation.absolute_path,
-                "status": operation.status,
-                "validation_reason": operation.validation_reason,
-                "expected_sha256": operation.expected_sha256,
-                "current_sha256": operation.current_sha256,
-                "current_exists": operation.current_exists,
-                "diff": operation.diff,
-                "diff_bytes": operation.diff_bytes,
-            }
-            for operation in item.operations
-        ],
-        "validation": list(item.validation),
-        "risks": list(item.risks),
-    }
+    return preview_bundle_to_payload(item)
 
 
 def _print_preview_bundle(item: PreviewBundle) -> None:
@@ -1054,12 +1028,15 @@ def _print_preview_bundle(item: PreviewBundle) -> None:
     print("Operations:")
     for operation in item.operations:
         print(f"- {operation.action} {operation.path} [{operation.status}]")
+        print(f"  requested operation: {operation.requested_operation}")
         print(f"  validation: {operation.validation_reason}")
         print(f"  absolute path: {operation.absolute_path}")
         if operation.expected_sha256:
             print(f"  expected sha256: {operation.expected_sha256}")
         if operation.current_sha256:
             print(f"  current sha256: {operation.current_sha256}")
+        if operation.content_sha256:
+            print(f"  content sha256: {operation.content_sha256}")
         print(f"  current exists: {'yes' if operation.current_exists else 'no'}")
         print(f"  diff bytes: {operation.diff_bytes}")
         if operation.diff:

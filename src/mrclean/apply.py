@@ -47,7 +47,7 @@ class DraftApplier:
     def __init__(self, policy: PolicyEngine) -> None:
         self.policy = policy
 
-    def apply(self, preview: PreviewBundle, *, draft_contents: dict[str, str]) -> ApplyTransaction:
+    def apply(self, preview: PreviewBundle) -> ApplyTransaction:
         try:
             self.policy.require(
                 PlannedAction(
@@ -75,35 +75,38 @@ class DraftApplier:
         try:
             for operation in preview.operations:
                 backup = backups[operation.path]
-                self._apply_operation(operation, backup.path, draft_contents)
+                self._apply_operation(operation, backup.path)
                 changed_backups.append(backup)
                 applied.append(self._applied_operation(operation, current_hashes[operation.path], changed=True))
         except Exception as exc:  # pragma: no cover - hard to force from public surface
             self._rollback(changed_backups)
-            partial = tuple(
-                applied
-                + [
+            attempted = {operation.path for operation in preview.operations[: len(applied)]}
+            partial: list[AppliedOperation] = []
+            for operation in preview.operations:
+                target = Path(operation.absolute_path)
+                after_sha256 = ""
+                if target.exists() and target.is_file():
+                    after_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+                partial.append(
                     AppliedOperation(
                         path=operation.path,
                         action=operation.action,
                         absolute_path=operation.absolute_path,
-                        status="blocked",
+                        status="rolled_back" if operation.path in attempted else "blocked",
                         validation_reason=f"apply failed and changes were rolled back: {exc}",
                         expected_sha256=operation.expected_sha256,
                         before_sha256=current_hashes.get(operation.path, ""),
-                        after_sha256="",
+                        after_sha256=after_sha256,
                         changed=False,
                     )
-                    for operation in preview.operations[len(applied) :]
-                ]
-            )
+                )
             return ApplyTransaction(
                 repository=preview.repository,
                 number=preview.number,
                 branch=preview.branch,
                 status="rolled_back",
                 summary="Apply failed and any partial local writes were rolled back.",
-                operations=partial,
+                operations=tuple(partial),
                 validation=preview.validation,
                 risks=preview.risks + ("apply failed and was rolled back",),
             )
@@ -143,6 +146,9 @@ class DraftApplier:
                 return f"current file hash no longer matches expected precondition for {operation.path}"
 
             if operation.action == "write_file":
+                content_digest = hashlib.sha256(operation.content.encode("utf-8")).hexdigest()
+                if operation.content_sha256 and content_digest != operation.content_sha256:
+                    return f"preview content hash does not match declared content hash for {operation.path}"
                 if not exists and target.parent and not target.parent.exists():
                     return f"target parent directory does not exist for {operation.path}"
             elif operation.action == "delete_file":
@@ -155,15 +161,15 @@ class DraftApplier:
             current_hashes[operation.path] = digest
         return backups, current_hashes
 
-    def _apply_operation(self, operation: PreviewOperation, target: Path, draft_contents: dict[str, str]) -> None:
+    def _apply_operation(self, operation: PreviewOperation, target: Path) -> None:
         if operation.action == "delete_file":
             target.unlink()
             return
-        content = draft_contents.get(operation.path)
-        if content is None:
-            raise RuntimeError(f"missing draft content for {operation.path}")
+        if operation.content == "" and not operation.content_sha256:
+            raise RuntimeError(f"missing preview content for {operation.path}")
         previous_mode = target.stat().st_mode & 0o777 if target.exists() else None
-        _write_atomic(target, content.encode("utf-8"), mode=previous_mode)
+        mode = previous_mode if previous_mode is not None else _default_mode_for_content(operation.content)
+        _write_atomic(target, operation.content.encode("utf-8"), mode=mode)
 
     def _applied_operation(self, operation: PreviewOperation, before_sha256: str, *, changed: bool) -> AppliedOperation:
         target = Path(operation.absolute_path)
@@ -214,6 +220,11 @@ class DraftApplier:
             validation=preview.validation,
             risks=preview.risks + (reason,),
         )
+
+
+def _default_mode_for_content(content: str) -> int:
+    return 0o755 if content.startswith("#!") else 0o644
+
 
 def _write_atomic(path: Path, data: bytes, *, mode: int | None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

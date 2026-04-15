@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import difflib
 import hashlib
+import json
 from pathlib import Path
 
 from .drafts import DraftBundle, DraftOperation
@@ -11,6 +12,7 @@ from .drafts import DraftBundle, DraftOperation
 @dataclass(slots=True)
 class PreviewOperation:
     path: str
+    requested_operation: str
     action: str
     absolute_path: str
     status: str
@@ -20,6 +22,8 @@ class PreviewOperation:
     current_exists: bool
     diff: str
     diff_bytes: int
+    content_sha256: str = ""
+    content: str = ""
 
 
 @dataclass(slots=True)
@@ -40,6 +44,7 @@ class DraftPreviewer:
             operations = tuple(
                 PreviewOperation(
                     path=operation.path,
+                    requested_operation=operation.requested_operation,
                     action=operation.action,
                     absolute_path=operation.absolute_path,
                     status="blocked",
@@ -49,6 +54,8 @@ class DraftPreviewer:
                     current_exists=False,
                     diff="",
                     diff_bytes=0,
+                    content_sha256=operation.content_sha256,
+                    content=operation.content,
                 )
                 for operation in draft.operations
             )
@@ -122,6 +129,7 @@ class DraftPreviewer:
         status = "blocked" if problems else "ready"
         return PreviewOperation(
             path=operation.path,
+            requested_operation=operation.requested_operation,
             action=operation.action,
             absolute_path=operation.absolute_path,
             status=status,
@@ -131,6 +139,8 @@ class DraftPreviewer:
             current_exists=current_exists,
             diff=diff,
             diff_bytes=len(diff.encode("utf-8")) if diff else 0,
+            content_sha256=operation.content_sha256,
+            content=operation.content,
         )
 
 
@@ -154,3 +164,82 @@ def _render_diff(operation: DraftOperation, current_text: str) -> str:
         lineterm="",
     )
     return "\n".join(diff_lines)
+
+
+def preview_bundle_to_payload(bundle: PreviewBundle) -> dict[str, object]:
+    return {
+        "repository": bundle.repository,
+        "number": bundle.number,
+        "branch": bundle.branch,
+        "status": bundle.status,
+        "summary": bundle.summary,
+        "operations": [
+            {
+                "path": operation.path,
+                "requested_operation": operation.requested_operation,
+                "action": operation.action,
+                "absolute_path": operation.absolute_path,
+                "status": operation.status,
+                "validation_reason": operation.validation_reason,
+                "expected_sha256": operation.expected_sha256,
+                "current_sha256": operation.current_sha256,
+                "current_exists": operation.current_exists,
+                "diff": operation.diff,
+                "diff_bytes": operation.diff_bytes,
+                "content_sha256": operation.content_sha256,
+                "content": operation.content,
+            }
+            for operation in bundle.operations
+        ],
+        "validation": list(bundle.validation),
+        "risks": list(bundle.risks),
+    }
+
+
+def preview_bundle_from_payload(payload: dict[str, object]) -> PreviewBundle:
+    operations_raw = payload.get("operations", [])
+    if not isinstance(operations_raw, list):
+        raise ValueError("preview operations must be a list")
+    operations = tuple(
+        PreviewOperation(
+            path=str(item["path"]),
+            requested_operation=str(item.get("requested_operation", "modify")),
+            action=str(item["action"]),
+            absolute_path=str(item["absolute_path"]),
+            status=str(item["status"]),
+            validation_reason=str(item["validation_reason"]),
+            expected_sha256=str(item.get("expected_sha256", "")),
+            current_sha256=str(item.get("current_sha256", "")),
+            current_exists=bool(item.get("current_exists", False)),
+            diff=str(item.get("diff", "")),
+            diff_bytes=int(item.get("diff_bytes", 0)),
+            content_sha256=str(item.get("content_sha256", "")),
+            content=str(item.get("content", "")),
+        )
+        for item in operations_raw
+        if isinstance(item, dict)
+    )
+    return PreviewBundle(
+        repository=str(payload["repository"]),
+        number=int(payload["number"]),
+        branch=str(payload["branch"]),
+        status=str(payload["status"]),
+        summary=str(payload["summary"]),
+        operations=operations,
+        validation=tuple(str(item) for item in payload.get("validation", [])),
+        risks=tuple(str(item) for item in payload.get("risks", [])),
+    )
+
+
+def dump_preview_bundles(path: Path, bundles: tuple[PreviewBundle, ...] | list[PreviewBundle]) -> None:
+    payload = [preview_bundle_to_payload(bundle) for bundle in bundles]
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def load_preview_bundles(path: Path) -> tuple[PreviewBundle, ...]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        return (preview_bundle_from_payload(raw),)
+    if not isinstance(raw, list):
+        raise ValueError("preview artifact must be a JSON object or list")
+    return tuple(preview_bundle_from_payload(item) for item in raw if isinstance(item, dict))
