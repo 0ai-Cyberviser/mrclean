@@ -8,7 +8,9 @@ import time
 
 from .agent import CleanupSignal, MrCleanAgent
 from .config import MrCleanConfig, sample_config
+from .dispatch import DispatchCandidate, DispatchPlanner
 from .monitor import RepositoryScanner, ScanResult
+from .policies import PolicyEngine
 from .watch import RepositoryWatcher, WatchEvent
 
 
@@ -70,6 +72,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="number of polls to run; 0 means run until interrupted",
     )
 
+    dispatch_parser = subparsers.add_parser(
+        "dispatch",
+        help="turn the current queue into guarded execution candidates",
+    )
+    dispatch_parser.add_argument("config", help="path to mrclean TOML config")
+    dispatch_parser.add_argument("--repo", action="append", default=[], help="limit dispatch to a configured repo")
+    dispatch_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    dispatch_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+
     return parser
 
 
@@ -87,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_scan(args)
     if args.command == "watch":
         return _run_watch(args)
+    if args.command == "dispatch":
+        return _run_dispatch(args)
 
     parser.error("unknown command")
     return 2
@@ -201,6 +218,31 @@ def _run_watch(args: argparse.Namespace) -> int:
         return 130
 
 
+def _run_dispatch(args: argparse.Namespace) -> int:
+    config = MrCleanConfig.from_toml(Path(args.config))
+    scanner = RepositoryScanner(config)
+    results = scanner.scan(
+        repositories=tuple(args.repo),
+        include_healthy=bool(args.include_healthy),
+    )
+    planner = DispatchPlanner(PolicyEngine(config.policy))
+    candidates = planner.build(results)
+
+    if args.json:
+        payload = [_dispatch_candidate_payload(candidate) for candidate in candidates]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if not candidates:
+        print("No dispatch candidates.")
+        return 0
+
+    for candidate in candidates:
+        _print_dispatch_candidate(candidate)
+        print()
+    return 0
+
+
 def _scan_item_payload(item: ScanResult) -> dict[str, object]:
     return {
         "repository": item.repository,
@@ -299,6 +341,55 @@ def _watch_event_payload(event: WatchEvent) -> dict[str, object]:
         "current": None if event.current is None else _scan_item_payload(event.current),
         "previous": None if event.previous is None else _scan_item_payload(event.previous),
     }
+
+
+def _dispatch_candidate_payload(candidate: DispatchCandidate) -> dict[str, object]:
+    return {
+        "repository": candidate.repository,
+        "number": candidate.number,
+        "title": candidate.title,
+        "url": candidate.url,
+        "branch": candidate.branch,
+        "category": candidate.category,
+        "status": candidate.status,
+        "priority": candidate.priority,
+        "workspace_ready": candidate.workspace_ready,
+        "workspace_reason": candidate.workspace_reason,
+        "changed_files": list(candidate.changed_files),
+        "actions": [
+            {
+                "kind": action.kind,
+                "summary": action.summary,
+                "allowed": action.allowed,
+                "reason": action.reason,
+                "command_hint": action.command_hint,
+            }
+            for action in candidate.actions
+        ],
+    }
+
+
+def _print_dispatch_candidate(candidate: DispatchCandidate) -> None:
+    print(f"{candidate.repository}#{candidate.number} [{candidate.status}]")
+    print(f"Title: {candidate.title}")
+    print(f"Branch: {candidate.branch}")
+    print(f"Category: {candidate.category}")
+    print(f"Priority: {candidate.priority}")
+    print(f"Workspace ready: {'yes' if candidate.workspace_ready else 'no'}")
+    print(f"Workspace reason: {candidate.workspace_reason}")
+    if candidate.changed_files:
+        print(f"Changed files: {', '.join(candidate.changed_files)}")
+    if not candidate.actions:
+        print("No actions queued.")
+    else:
+        print("Actions:")
+        for action in candidate.actions:
+            verdict = "allowed" if action.allowed else "blocked"
+            print(f"- {action.kind} [{verdict}]: {action.summary}")
+            print(f"  reason: {action.reason}")
+            if action.command_hint:
+                print(f"  hint: {action.command_hint}")
+    print(f"URL: {candidate.url}")
 
 
 if __name__ == "__main__":

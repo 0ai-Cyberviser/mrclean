@@ -32,8 +32,9 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/workspace.py`: local git workspace inspection for branch and diff context
 - `src/mrclean/monitor.py`: repo scanner that turns live PR state into cleanup plans
 - `src/mrclean/watch.py`: polling queue that emits appeared, updated, and resolved events
+- `src/mrclean/dispatch.py`: dry-run executor that turns queue items into guarded action candidates
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, and `watch` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, and `dispatch` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -51,6 +52,8 @@ PYTHONPATH=src python -m mrclean scan mrclean.toml.example \
 PYTHONPATH=src python -m mrclean watch mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub \
   --interval 30
+PYTHONPATH=src python -m mrclean dispatch mrclean.toml.example \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub
 ```
 
 `scan` requires GitHub CLI authentication via `gh auth login` or an existing
@@ -70,6 +73,11 @@ pretending it has the right diff.
 updated entries, and items resolved out of the queue. Use `--iterations 1` for
 a single polling cycle in scripts, or leave it running for continuous
 monitoring.
+
+`dispatch` stays dry-run and policy-first. It converts the current queue into
+execution candidates, marks whether each item is `ready`, `inspect_only`, or
+`deferred`, and shows which actions are blocked by policy or by a workspace
+mismatch before any real write step exists.
 
 ## Design stance
 

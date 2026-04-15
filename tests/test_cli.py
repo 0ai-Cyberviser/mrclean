@@ -90,6 +90,80 @@ class CliTests(unittest.TestCase):
             self.assertIn("Iteration 1: appeared example/repo#32", output)
             self.assertIn("Failing checks: build-linux", output)
 
+    def test_dispatch_command_renders_candidate_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+
+            class FakeScanner:
+                def __init__(self, config) -> None:
+                    self.config = config
+
+                def scan(self, repositories=None, include_healthy=False):
+                    return (
+                        ScanResult(
+                            repository="example/repo",
+                            number=32,
+                            title="Fix CI",
+                            url="https://github.com/example/repo/pull/32",
+                            branch="fix-ci",
+                            updated_at="2026-04-15T18:00:00Z",
+                            merge_state_status="UNSTABLE",
+                            category="needs_attention",
+                            failing_checks=("build-linux",),
+                            pending_checks=(),
+                            changed_files=("a.py",),
+                            workspace_path="/repo",
+                            workspace_branch="fix-ci",
+                            workspace_notes=(),
+                            plan=None,
+                        ),
+                    )
+
+            class FakePlanner:
+                def __init__(self, policy) -> None:
+                    self.policy = policy
+
+                def build(self, results):
+                    from mrclean.dispatch import DispatchCandidate, DispatchAction
+
+                    return (
+                        DispatchCandidate(
+                            repository="example/repo",
+                            number=32,
+                            title="Fix CI",
+                            url="https://github.com/example/repo/pull/32",
+                            branch="fix-ci",
+                            category="needs_attention",
+                            status="ready",
+                            priority=0,
+                            workspace_ready=True,
+                            workspace_reason="workspace matches PR branch",
+                            changed_files=("a.py",),
+                            actions=(
+                                DispatchAction(
+                                    kind="edit_patch",
+                                    summary="edit",
+                                    allowed=True,
+                                    reason="allowed",
+                                    command_hint="git -C /repo diff --stat",
+                                ),
+                            ),
+                        ),
+                    )
+
+            buffer = StringIO()
+            with patch("mrclean.cli.RepositoryScanner", FakeScanner):
+                with patch("mrclean.cli.DispatchPlanner", FakePlanner):
+                    with redirect_stdout(buffer):
+                        result = main(["dispatch", str(config_path)])
+
+            self.assertEqual(result, 0)
+            output = buffer.getvalue()
+            self.assertIn("example/repo#32 [ready]", output)
+            self.assertIn("Workspace ready: yes", output)
+            self.assertIn("edit_patch [allowed]", output)
+
 
 if __name__ == "__main__":
     unittest.main()
