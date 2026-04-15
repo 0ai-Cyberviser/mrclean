@@ -11,6 +11,7 @@ from .config import MrCleanConfig, sample_config
 from .dispatch import DispatchCandidate, DispatchPlanner
 from .monitor import RepositoryScanner, ScanResult
 from .policies import PolicyEngine
+from .runner import ActionExecution, LocalRunner, RunSession
 from .watch import RepositoryWatcher, WatchEvent
 
 
@@ -85,6 +86,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="include healthy PRs in the queue instead of only pending or failing ones",
     )
 
+    run_parser = subparsers.add_parser(
+        "run",
+        help="execute safe local prep commands for ready or inspect-only candidates",
+    )
+    run_parser.add_argument("config", help="path to mrclean TOML config")
+    run_parser.add_argument("--repo", action="append", default=[], help="limit run to a configured repo")
+    run_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
+    run_parser.add_argument("--limit", type=int, default=1, help="number of candidates to run when --pr is omitted")
+    run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    run_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+
     return parser
 
 
@@ -104,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_watch(args)
     if args.command == "dispatch":
         return _run_dispatch(args)
+    if args.command == "run":
+        return _run_run(args)
 
     parser.error("unknown command")
     return 2
@@ -239,6 +257,37 @@ def _run_dispatch(args: argparse.Namespace) -> int:
 
     for candidate in candidates:
         _print_dispatch_candidate(candidate)
+        print()
+    return 0
+
+
+def _run_run(args: argparse.Namespace) -> int:
+    config = MrCleanConfig.from_toml(Path(args.config))
+    scanner = RepositoryScanner(config)
+    results = scanner.scan(
+        repositories=tuple(args.repo),
+        include_healthy=bool(args.include_healthy),
+    )
+    planner = DispatchPlanner(PolicyEngine(config.policy))
+    candidates = planner.build(results)
+    runner = LocalRunner()
+    sessions = runner.run(candidates, pr_number=args.pr, limit=args.limit)
+
+    if args.pr is not None and not sessions:
+        print(f"PR #{args.pr} is not present in the dispatch queue.", file=sys.stderr)
+        return 1
+
+    if args.json:
+        payload = [_run_session_payload(session) for session in sessions]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if not sessions:
+        print("No runnable candidates.")
+        return 0
+
+    for session in sessions:
+        _print_run_session(session)
         print()
     return 0
 
@@ -390,6 +439,55 @@ def _print_dispatch_candidate(candidate: DispatchCandidate) -> None:
             if action.command_hint:
                 print(f"  hint: {action.command_hint}")
     print(f"URL: {candidate.url}")
+
+
+def _run_session_payload(session: RunSession) -> dict[str, object]:
+    return {
+        "repository": session.repository,
+        "number": session.number,
+        "branch": session.branch,
+        "candidate_status": session.candidate_status,
+        "run_status": session.run_status,
+        "executions": [_action_execution_payload(execution) for execution in session.executions],
+    }
+
+
+def _action_execution_payload(execution: ActionExecution) -> dict[str, object]:
+    return {
+        "kind": execution.kind,
+        "summary": execution.summary,
+        "command": execution.command,
+        "status": execution.status,
+        "reason": execution.reason,
+        "returncode": execution.returncode,
+        "stdout": execution.stdout,
+        "stderr": execution.stderr,
+    }
+
+
+def _print_run_session(session: RunSession) -> None:
+    print(f"{session.repository}#{session.number} [{session.run_status}]")
+    print(f"Branch: {session.branch}")
+    print(f"Candidate status: {session.candidate_status}")
+    if not session.executions:
+        print("No executions.")
+        return
+    print("Executions:")
+    for execution in session.executions:
+        print(f"- {execution.kind} [{execution.status}]: {execution.summary}")
+        print(f"  reason: {execution.reason}")
+        if execution.command:
+            print(f"  command: {execution.command}")
+        if execution.returncode is not None:
+            print(f"  returncode: {execution.returncode}")
+        if execution.stdout.strip():
+            print("  stdout:")
+            for line in execution.stdout.rstrip().splitlines():
+                print(f"    {line}")
+        if execution.stderr.strip():
+            print("  stderr:")
+            for line in execution.stderr.rstrip().splitlines():
+                print(f"    {line}")
 
 
 if __name__ == "__main__":

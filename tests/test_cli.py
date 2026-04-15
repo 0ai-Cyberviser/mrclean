@@ -164,6 +164,64 @@ class CliTests(unittest.TestCase):
             self.assertIn("Workspace ready: yes", output)
             self.assertIn("edit_patch [allowed]", output)
 
+    def test_run_command_renders_execution_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+
+            class FakeScanner:
+                def __init__(self, config) -> None:
+                    self.config = config
+
+                def scan(self, repositories=None, include_healthy=False):
+                    return ()
+
+            class FakePlanner:
+                def __init__(self, policy) -> None:
+                    self.policy = policy
+
+                def build(self, results):
+                    return ()
+
+            class FakeRunner:
+                def run(self, candidates, pr_number=None, limit=1):
+                    from mrclean.runner import RunSession, ActionExecution
+
+                    return (
+                        RunSession(
+                            repository="example/repo",
+                            number=32,
+                            branch="fix-ci",
+                            candidate_status="ready",
+                            run_status="prepared",
+                            executions=(
+                                ActionExecution(
+                                    kind="inspect_signal",
+                                    summary="inspect",
+                                    command="gh pr view 32",
+                                    status="executed",
+                                    reason="command completed successfully",
+                                    returncode=0,
+                                    stdout="ok\n",
+                                    stderr="",
+                                ),
+                            ),
+                        ),
+                    )
+
+            buffer = StringIO()
+            with patch("mrclean.cli.RepositoryScanner", FakeScanner):
+                with patch("mrclean.cli.DispatchPlanner", FakePlanner):
+                    with patch("mrclean.cli.LocalRunner", return_value=FakeRunner()):
+                        with redirect_stdout(buffer):
+                            result = main(["run", str(config_path)])
+
+            self.assertEqual(result, 0)
+            output = buffer.getvalue()
+            self.assertIn("example/repo#32 [prepared]", output)
+            self.assertIn("inspect_signal [executed]", output)
+            self.assertIn("gh pr view 32", output)
+
 
 if __name__ == "__main__":
     unittest.main()

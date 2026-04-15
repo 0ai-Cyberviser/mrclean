@@ -33,8 +33,9 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/monitor.py`: repo scanner that turns live PR state into cleanup plans
 - `src/mrclean/watch.py`: polling queue that emits appeared, updated, and resolved events
 - `src/mrclean/dispatch.py`: dry-run executor that turns queue items into guarded action candidates
+- `src/mrclean/runner.py`: safe local runner for inspect and prep commands from dispatch candidates
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, and `dispatch` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, and `run` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -53,6 +54,8 @@ PYTHONPATH=src python -m mrclean watch mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub \
   --interval 30
 PYTHONPATH=src python -m mrclean dispatch mrclean.toml.example \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub
+PYTHONPATH=src python -m mrclean run mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 ```
 
@@ -78,6 +81,11 @@ monitoring.
 execution candidates, marks whether each item is `ready`, `inspect_only`, or
 `deferred`, and shows which actions are blocked by policy or by a workspace
 mismatch before any real write step exists.
+
+`run` is still non-mutating. It executes only safe prep commands from dispatch
+results, such as GitHub inspection and local diff/status gathering. Actions
+like `push_commit` and `close_pr` remain blocked behind policy and are never run
+by this local runner.
 
 ## Design stance
 
