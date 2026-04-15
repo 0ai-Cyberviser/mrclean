@@ -38,8 +38,9 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/intents.py`: validated machine-readable edit intents for a later executor
 - `src/mrclean/materialize.py`: local intent resolution against the checkout with hashes and previews
 - `src/mrclean/drafts.py`: guarded file-write bundle generation with hash preconditions
+- `src/mrclean/previews.py`: unified diff rendering from guarded draft bundles
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, `propose`, `intent`, `materialize`, and `draft` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, `propose`, `intent`, `materialize`, `draft`, and `preview` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -68,6 +69,8 @@ PYTHONPATH=src python -m mrclean intent mrclean.toml.example \
 PYTHONPATH=src python -m mrclean materialize mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 PYTHONPATH=src python -m mrclean draft mrclean.toml.example \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub
+PYTHONPATH=src python -m mrclean preview mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 ```
 
@@ -124,6 +127,12 @@ hashes plus previews for generated file bodies. If the workspace is not ready,
 the file is not readable as UTF-8 text, or the generated operation drifts from
 the materialized file set, MrClean blocks the draft instead of pretending it is
 safe to apply.
+
+`preview` builds on `draft` and stays read-only as well. It rechecks the
+current file hash against each draft bundle's expected precondition, then
+renders a unified diff only when the on-disk file still matches the validated
+draft input. If the file changed since draft generation, is missing, or is not
+UTF-8 text, MrClean blocks the preview instead of showing a stale diff.
 
 ## Design stance
 

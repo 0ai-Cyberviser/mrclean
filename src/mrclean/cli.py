@@ -14,6 +14,7 @@ from .intents import EditIntent, IntentGenerator
 from .materialize import IntentMaterializer, MaterializedIntent
 from .monitor import RepositoryScanner, ScanResult
 from .policies import PolicyEngine
+from .previews import DraftPreviewer, PreviewBundle
 from .proposals import Proposal, ProposalGenerator
 from .runner import ActionExecution, LocalRunner, RunSession
 from .watch import RepositoryWatcher, WatchEvent
@@ -165,6 +166,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="include healthy PRs in the queue instead of only pending or failing ones",
     )
 
+    preview_parser = subparsers.add_parser(
+        "preview",
+        help="render unified diff previews from guarded draft bundles without applying them",
+    )
+    preview_parser.add_argument("config", help="path to mrclean TOML config")
+    preview_parser.add_argument("--repo", action="append", default=[], help="limit preview generation to a configured repo")
+    preview_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
+    preview_parser.add_argument("--limit", type=int, default=1, help="number of candidates to preview when --pr is omitted")
+    preview_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    preview_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+
     return parser
 
 
@@ -194,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_materialize(args)
     if args.command == "draft":
         return _run_draft(args)
+    if args.command == "preview":
+        return _run_preview(args)
 
     parser.error("unknown command")
     return 2
@@ -459,17 +477,13 @@ def _run_materialize(args: argparse.Namespace) -> int:
 
 
 def _run_draft(args: argparse.Namespace) -> int:
-    materialized = _build_materialized_batch(args)
-    if args.pr is not None and not materialized:
+    drafts = _build_draft_batch(args)
+    if args.pr is not None and not drafts:
         print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
         return 1
-    if not materialized:
+    if not drafts:
         print("No draft candidates.")
         return 0
-
-    config = MrCleanConfig.from_toml(Path(args.config))
-    generator = DraftGenerator(config)
-    drafts = [generator.generate(item) for item in materialized]
 
     if args.json:
         payload = [_draft_bundle_payload(item) for item in drafts]
@@ -478,6 +492,29 @@ def _run_draft(args: argparse.Namespace) -> int:
 
     for item in drafts:
         _print_draft_bundle(item)
+        print()
+    return 0
+
+
+def _run_preview(args: argparse.Namespace) -> int:
+    drafts = _build_draft_batch(args)
+    if args.pr is not None and not drafts:
+        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        return 1
+    if not drafts:
+        print("No preview candidates.")
+        return 0
+
+    previewer = DraftPreviewer()
+    previews = [previewer.preview(item) for item in drafts]
+
+    if args.json:
+        payload = [_preview_bundle_payload(item) for item in previews]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    for item in previews:
+        _print_preview_bundle(item)
         print()
     return 0
 
@@ -506,6 +543,16 @@ def _build_materialized_batch(args: argparse.Namespace) -> list[MaterializedInte
         intent = intent_generator.generate(candidate, session)
         materialized.append(materializer.materialize(candidate, intent))
     return materialized
+
+
+def _build_draft_batch(args: argparse.Namespace) -> list[DraftBundle]:
+    materialized = _build_materialized_batch(args)
+    if not materialized:
+        return []
+
+    config = MrCleanConfig.from_toml(Path(args.config))
+    generator = DraftGenerator(config)
+    return [generator.generate(item) for item in materialized]
 
 
 def _scan_item_payload(item: ScanResult) -> dict[str, object]:
@@ -897,6 +944,63 @@ def _print_draft_bundle(item: DraftBundle) -> None:
         if operation.content_preview:
             print("  content preview:")
             for line in operation.content_preview.rstrip().splitlines():
+                print(f"    {line}")
+    if item.validation:
+        print("Validation:")
+        for check in item.validation:
+            print(f"- {check}")
+    if item.risks:
+        print("Risks:")
+        for risk in item.risks:
+            print(f"- {risk}")
+
+
+def _preview_bundle_payload(item: PreviewBundle) -> dict[str, object]:
+    return {
+        "repository": item.repository,
+        "number": item.number,
+        "branch": item.branch,
+        "status": item.status,
+        "summary": item.summary,
+        "operations": [
+            {
+                "path": operation.path,
+                "action": operation.action,
+                "absolute_path": operation.absolute_path,
+                "status": operation.status,
+                "validation_reason": operation.validation_reason,
+                "expected_sha256": operation.expected_sha256,
+                "current_sha256": operation.current_sha256,
+                "current_exists": operation.current_exists,
+                "diff": operation.diff,
+                "diff_bytes": operation.diff_bytes,
+            }
+            for operation in item.operations
+        ],
+        "validation": list(item.validation),
+        "risks": list(item.risks),
+    }
+
+
+def _print_preview_bundle(item: PreviewBundle) -> None:
+    print(f"{item.repository}#{item.number} [preview]")
+    print(f"Branch: {item.branch}")
+    print(f"Status: {item.status}")
+    print(f"Summary: {item.summary}")
+    print("Operations:")
+    for operation in item.operations:
+        print(f"- {operation.action} {operation.path} [{operation.status}]")
+        print(f"  validation: {operation.validation_reason}")
+        print(f"  absolute path: {operation.absolute_path}")
+        if operation.expected_sha256:
+            print(f"  expected sha256: {operation.expected_sha256}")
+        if operation.current_sha256:
+            print(f"  current sha256: {operation.current_sha256}")
+        print(f"  current exists: {'yes' if operation.current_exists else 'no'}")
+        print(f"  diff bytes: {operation.diff_bytes}")
+        if operation.diff:
+            print("  diff:")
+            for line in operation.diff.rstrip().splitlines():
                 print(f"    {line}")
     if item.validation:
         print("Validation:")
