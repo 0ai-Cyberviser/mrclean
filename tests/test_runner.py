@@ -37,6 +37,7 @@ class LocalRunnerTests(unittest.TestCase):
                 DispatchAction("edit_patch", "edit", True, "allowed", "git -C /repo diff --stat"),
                 DispatchAction("push_commit", "push", False, "push is disabled by policy", "git push"),
             ),
+            assessment_outcome="actionable",
         )
 
         session = LocalRunner(command_runner=runner).run((candidate,), limit=1)[0]
@@ -65,12 +66,33 @@ class LocalRunnerTests(unittest.TestCase):
                 DispatchAction("inspect_signal", "inspect", True, "allowed", "gh pr view 15"),
                 DispatchAction("edit_patch", "edit", False, "branch mismatch", "git diff"),
             ),
+            assessment_outcome="verify",
         )
 
-        session = LocalRunner(command_runner=runner).run((candidate,), limit=1)[0]
+        session = LocalRunner(command_runner=runner).run((candidate,), limit=1, allow_verify=True)[0]
         self.assertEqual(session.run_status, "inspected")
         self.assertEqual(session.executions[0].status, "executed")
         self.assertEqual(session.executions[1].status, "skipped")
+
+    def test_runner_skips_verify_candidates_without_override(self) -> None:
+        candidate = DispatchCandidate(
+            repository="example/repo",
+            number=15,
+            title="Inspect only",
+            url="https://github.com/example/repo/pull/15",
+            branch="other-branch",
+            category="needs_attention",
+            status="inspect_only",
+            priority=0,
+            workspace_ready=False,
+            workspace_reason="branch mismatch",
+            changed_files=(),
+            actions=(DispatchAction("inspect_signal", "inspect", True, "allowed", "gh pr view 15"),),
+            assessment_outcome="verify",
+        )
+
+        sessions = LocalRunner().run((candidate,), limit=1)
+        self.assertEqual(sessions, ())
 
     def test_runner_returns_empty_for_missing_target_pr(self) -> None:
         candidate = DispatchCandidate(
@@ -86,6 +108,7 @@ class LocalRunnerTests(unittest.TestCase):
             workspace_reason="workspace matches PR branch",
             changed_files=("a.py",),
             actions=(),
+            assessment_outcome="actionable",
         )
 
         sessions = LocalRunner().run((candidate,), pr_number=99)

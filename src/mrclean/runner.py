@@ -41,8 +41,14 @@ class LocalRunner:
         *,
         pr_number: int | None = None,
         limit: int = 1,
+        allow_verify: bool = False,
     ) -> tuple[RunSession, ...]:
-        selected = _select_candidates(candidates, pr_number=pr_number, limit=limit)
+        selected = _select_candidates(
+            candidates,
+            pr_number=pr_number,
+            limit=limit,
+            allow_verify=allow_verify,
+        )
         return tuple(self._run_candidate(candidate) for candidate in selected)
 
     def _run_candidate(self, candidate: DispatchCandidate) -> RunSession:
@@ -113,11 +119,22 @@ def _select_candidates(
     *,
     pr_number: int | None,
     limit: int,
+    allow_verify: bool,
 ) -> tuple[DispatchCandidate, ...]:
-    if pr_number is not None:
-        return tuple(candidate for candidate in candidates if candidate.number == pr_number)
+    permitted_outcomes = {"actionable"}
+    if allow_verify:
+        permitted_outcomes.add("verify")
 
-    runnable = tuple(candidate for candidate in candidates if candidate.status in {"ready", "inspect_only"})
+    def _is_runnable(candidate: DispatchCandidate) -> bool:
+        return (
+            candidate.status in {"ready", "inspect_only"}
+            and candidate.assessment_outcome in permitted_outcomes
+        )
+
+    if pr_number is not None:
+        return tuple(candidate for candidate in candidates if candidate.number == pr_number and _is_runnable(candidate))
+
+    runnable = tuple(candidate for candidate in candidates if _is_runnable(candidate))
     if limit <= 0:
         return runnable
     return runnable[:limit]

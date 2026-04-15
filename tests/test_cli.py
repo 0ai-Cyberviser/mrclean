@@ -100,7 +100,7 @@ class CliTests(unittest.TestCase):
             class FakeWatcher:
                 iteration = 0
 
-                def __init__(self, scanner) -> None:
+                def __init__(self, scanner, planner=None, assessor=None) -> None:
                     self.iteration = 0
 
                 def poll(self, repositories=None, include_healthy=False):
@@ -277,7 +277,7 @@ class CliTests(unittest.TestCase):
                     return ()
 
             class FakeRunner:
-                def run(self, candidates, pr_number=None, limit=1):
+                def run(self, candidates, pr_number=None, limit=1, allow_verify=False):
                     from mrclean.runner import RunSession, ActionExecution
 
                     return (
@@ -314,6 +314,69 @@ class CliTests(unittest.TestCase):
             self.assertIn("example/repo#32 [prepared]", output)
             self.assertIn("inspect_signal [executed]", output)
             self.assertIn("gh pr view 32", output)
+
+    def test_run_command_blocks_verify_candidate_without_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+
+            class FakeScanner:
+                def __init__(self, config) -> None:
+                    self.config = config
+
+                def scan(self, repositories=None, include_healthy=False):
+                    return (
+                        ScanResult(
+                            repository="example/repo",
+                            number=32,
+                            title="Fix CI",
+                            url="https://github.com/example/repo/pull/32",
+                            branch="fix-ci",
+                            updated_at="2026-04-15T18:00:00Z",
+                            merge_state_status="DIRTY",
+                            category="needs_attention",
+                            failing_checks=("build-linux", "fuzz-pr"),
+                            pending_checks=(),
+                            changed_files=("a.py",),
+                            workspace_path="/repo",
+                            workspace_branch="fix-ci",
+                            workspace_notes=(),
+                            plan=None,
+                        ),
+                    )
+
+            class FakePlanner:
+                def __init__(self, policy) -> None:
+                    self.policy = policy
+
+                def build(self, results):
+                    from mrclean.dispatch import DispatchCandidate, DispatchAction
+
+                    return (
+                        DispatchCandidate(
+                            repository="example/repo",
+                            number=32,
+                            title="Fix CI",
+                            url="https://github.com/example/repo/pull/32",
+                            branch="fix-ci",
+                            category="needs_attention",
+                            status="ready",
+                            priority=0,
+                            workspace_ready=True,
+                            workspace_reason="workspace matches PR branch",
+                            changed_files=("a.py",),
+                            actions=(DispatchAction("edit_patch", "edit", True, "allowed", "git diff"),),
+                        ),
+                    )
+
+            stderr = StringIO()
+            with patch("mrclean.cli.RepositoryScanner", FakeScanner):
+                with patch("mrclean.cli.DispatchPlanner", FakePlanner):
+                    with redirect_stdout(StringIO()), patch("sys.stderr", stderr):
+                        result = main(["run", str(config_path), "--pr", "32"])
+
+            self.assertEqual(result, 1)
+            self.assertIn("requires verification before execution", stderr.getvalue())
 
     def test_propose_command_renders_proposal_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -352,7 +415,7 @@ class CliTests(unittest.TestCase):
                     )
 
             class FakeRunner:
-                def run(self, candidates, pr_number=None, limit=1):
+                def run(self, candidates, pr_number=None, limit=1, allow_verify=False):
                     from mrclean.runner import RunSession
 
                     return (
@@ -399,6 +462,108 @@ class CliTests(unittest.TestCase):
             self.assertIn("Model: fake/fake-model", output)
             self.assertIn("Summary", output)
 
+    def test_propose_command_allows_verify_with_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text((PROJECT_ROOT / "mrclean.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+
+            class FakeScanner:
+                def __init__(self, config) -> None:
+                    self.config = config
+
+                def scan(self, repositories=None, include_healthy=False):
+                    return (
+                        ScanResult(
+                            repository="example/repo",
+                            number=32,
+                            title="Fix CI",
+                            url="https://github.com/example/repo/pull/32",
+                            branch="fix-ci",
+                            updated_at="2026-04-15T18:00:00Z",
+                            merge_state_status="DIRTY",
+                            category="needs_attention",
+                            failing_checks=("build-linux", "fuzz-pr"),
+                            pending_checks=(),
+                            changed_files=("a.py",),
+                            workspace_path="/repo",
+                            workspace_branch="fix-ci",
+                            workspace_notes=(),
+                            plan=None,
+                        ),
+                    )
+
+            class FakePlanner:
+                def __init__(self, policy) -> None:
+                    self.policy = policy
+
+                def build(self, results):
+                    from mrclean.dispatch import DispatchCandidate, DispatchAction
+
+                    return (
+                        DispatchCandidate(
+                            repository="example/repo",
+                            number=32,
+                            title="Fix CI",
+                            url="https://github.com/example/repo/pull/32",
+                            branch="fix-ci",
+                            category="needs_attention",
+                            status="ready",
+                            priority=0,
+                            workspace_ready=True,
+                            workspace_reason="workspace matches PR branch",
+                            changed_files=("a.py",),
+                            actions=(DispatchAction("edit_patch", "edit", True, "allowed", "git diff"),),
+                        ),
+                    )
+
+            class FakeRunner:
+                def run(self, candidates, pr_number=None, limit=1, allow_verify=False):
+                    self.allow_verify = allow_verify
+                    from mrclean.runner import RunSession
+
+                    return (
+                        RunSession(
+                            repository="example/repo",
+                            number=32,
+                            branch="fix-ci",
+                            candidate_status="ready",
+                            run_status="prepared",
+                            executions=(),
+                        ),
+                    )
+
+            class FakeProposalGenerator:
+                def __init__(self, config) -> None:
+                    self.config = config
+
+                def generate(self, candidate, session):
+                    from mrclean.proposals import Proposal
+
+                    return Proposal(
+                        repository="example/repo",
+                        number=32,
+                        branch="fix-ci",
+                        candidate_status=candidate.status,
+                        run_status=session.run_status,
+                        content="Summary\n- narrow fix",
+                        model_provider="fake",
+                        model_name="fake-model",
+                        raw={"provider": "fake"},
+                    )
+
+            fake_runner = FakeRunner()
+            buffer = StringIO()
+            with patch("mrclean.cli.RepositoryScanner", FakeScanner):
+                with patch("mrclean.cli.DispatchPlanner", FakePlanner):
+                    with patch("mrclean.cli.LocalRunner", return_value=fake_runner):
+                        with patch("mrclean.cli.ProposalGenerator", FakeProposalGenerator):
+                            with redirect_stdout(buffer):
+                                result = main(["propose", str(config_path), "--allow-verify"])
+
+            self.assertEqual(result, 0)
+            self.assertTrue(fake_runner.allow_verify)
+            self.assertIn("example/repo#32 [proposal]", buffer.getvalue())
+
     def test_intent_command_renders_intent_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "mrclean.toml"
@@ -436,7 +601,7 @@ class CliTests(unittest.TestCase):
                     )
 
             class FakeRunner:
-                def run(self, candidates, pr_number=None, limit=1):
+                def run(self, candidates, pr_number=None, limit=1, allow_verify=False):
                     from mrclean.runner import RunSession
 
                     return (
@@ -530,7 +695,7 @@ class CliTests(unittest.TestCase):
                     )
 
             class FakeRunner:
-                def run(self, candidates, pr_number=None, limit=1):
+                def run(self, candidates, pr_number=None, limit=1, allow_verify=False):
                     from mrclean.runner import RunSession
 
                     return (
@@ -662,7 +827,7 @@ class CliTests(unittest.TestCase):
                     )
 
             class FakeRunner:
-                def run(self, candidates, pr_number=None, limit=1):
+                def run(self, candidates, pr_number=None, limit=1, allow_verify=False):
                     from mrclean.runner import RunSession
 
                     return (
@@ -833,7 +998,7 @@ class CliTests(unittest.TestCase):
                     )
 
             class FakeRunner:
-                def run(self, candidates, pr_number=None, limit=1):
+                def run(self, candidates, pr_number=None, limit=1, allow_verify=False):
                     from mrclean.runner import RunSession
 
                     return (

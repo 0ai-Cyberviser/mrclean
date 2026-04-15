@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import sys
 import time
 
 from .agent import CleanupSignal, MrCleanAgent
-from .assess import AssessmentReport, CandidateAssessor
+from .assess import AssessmentReport, CandidateAssessor, gate_dispatch_candidates
 from .apply import ApplyTransaction, DraftApplier
 from .config import MrCleanConfig, sample_config
 from .dispatch import DispatchCandidate, DispatchPlanner
@@ -27,6 +28,16 @@ from .previews import (
 from .proposals import Proposal, ProposalGenerator
 from .runner import ActionExecution, LocalRunner, RunSession
 from .watch import RepositoryWatcher, WatchEvent
+
+
+@dataclass(slots=True)
+class _AssessedQueue:
+    config: MrCleanConfig
+    results: tuple[ScanResult, ...]
+    candidates: tuple[DispatchCandidate, ...]
+    reports: tuple[AssessmentReport, ...]
+    candidate_map: dict[tuple[str, int], DispatchCandidate]
+    report_map: dict[tuple[str, int], AssessmentReport]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,6 +134,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--limit", type=int, default=1, help="number of candidates to run when --pr is omitted")
     run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     run_parser.add_argument(
+        "--allow-verify",
+        action="store_true",
+        help="allow verify-rated candidates to run after explicit operator review",
+    )
+    run_parser.add_argument(
         "--include-healthy",
         action="store_true",
         help="include healthy PRs in the queue instead of only pending or failing ones",
@@ -137,6 +153,11 @@ def build_parser() -> argparse.ArgumentParser:
     propose_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
     propose_parser.add_argument("--limit", type=int, default=1, help="number of candidates to propose for when --pr is omitted")
     propose_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    propose_parser.add_argument(
+        "--allow-verify",
+        action="store_true",
+        help="allow verify-rated candidates into proposal generation after explicit operator review",
+    )
     propose_parser.add_argument(
         "--include-healthy",
         action="store_true",
@@ -153,6 +174,11 @@ def build_parser() -> argparse.ArgumentParser:
     intent_parser.add_argument("--limit", type=int, default=1, help="number of candidates to generate intents for when --pr is omitted")
     intent_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     intent_parser.add_argument(
+        "--allow-verify",
+        action="store_true",
+        help="allow verify-rated candidates into intent generation after explicit operator review",
+    )
+    intent_parser.add_argument(
         "--include-healthy",
         action="store_true",
         help="include healthy PRs in the queue instead of only pending or failing ones",
@@ -167,6 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
     materialize_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
     materialize_parser.add_argument("--limit", type=int, default=1, help="number of candidates to materialize when --pr is omitted")
     materialize_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    materialize_parser.add_argument(
+        "--allow-verify",
+        action="store_true",
+        help="allow verify-rated candidates into materialization after explicit operator review",
+    )
     materialize_parser.add_argument(
         "--include-healthy",
         action="store_true",
@@ -183,6 +214,11 @@ def build_parser() -> argparse.ArgumentParser:
     draft_parser.add_argument("--limit", type=int, default=1, help="number of candidates to draft when --pr is omitted")
     draft_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     draft_parser.add_argument(
+        "--allow-verify",
+        action="store_true",
+        help="allow verify-rated candidates into draft generation after explicit operator review",
+    )
+    draft_parser.add_argument(
         "--include-healthy",
         action="store_true",
         help="include healthy PRs in the queue instead of only pending or failing ones",
@@ -198,6 +234,11 @@ def build_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument("--limit", type=int, default=1, help="number of candidates to preview when --pr is omitted")
     preview_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     preview_parser.add_argument("--output", help="write the preview artifact JSON to this path")
+    preview_parser.add_argument(
+        "--allow-verify",
+        action="store_true",
+        help="allow verify-rated candidates into preview generation after explicit operator review",
+    )
     preview_parser.add_argument(
         "--include-healthy",
         action="store_true",
@@ -348,7 +389,9 @@ def _run_scan(args: argparse.Namespace) -> int:
 
 def _run_watch(args: argparse.Namespace) -> int:
     config = MrCleanConfig.from_toml(Path(args.config))
-    watcher = RepositoryWatcher(RepositoryScanner(config))
+    scanner = RepositoryScanner(config)
+    planner = DispatchPlanner(PolicyEngine(config.policy))
+    watcher = RepositoryWatcher(scanner, planner=planner, assessor=CandidateAssessor())
     iteration_limit = args.iterations
     try:
         while True:
@@ -367,14 +410,8 @@ def _run_watch(args: argparse.Namespace) -> int:
 
 
 def _run_dispatch(args: argparse.Namespace) -> int:
-    config = MrCleanConfig.from_toml(Path(args.config))
-    scanner = RepositoryScanner(config)
-    results = scanner.scan(
-        repositories=tuple(args.repo),
-        include_healthy=bool(args.include_healthy),
-    )
-    planner = DispatchPlanner(PolicyEngine(config.policy))
-    candidates = planner.build(results)
+    queue = _build_assessed_queue(args)
+    candidates = queue.candidates
 
     if args.json:
         payload = [_dispatch_candidate_payload(candidate) for candidate in candidates]
@@ -392,15 +429,8 @@ def _run_dispatch(args: argparse.Namespace) -> int:
 
 
 def _run_assess(args: argparse.Namespace) -> int:
-    config = MrCleanConfig.from_toml(Path(args.config))
-    scanner = RepositoryScanner(config)
-    results = scanner.scan(
-        repositories=tuple(args.repo),
-        include_healthy=bool(args.include_healthy),
-    )
-    planner = DispatchPlanner(PolicyEngine(config.policy))
-    candidates = planner.build(results)
-    reports = CandidateAssessor().assess(results, candidates)
+    queue = _build_assessed_queue(args)
+    reports = queue.reports
 
     if args.json:
         payload = [_assessment_report_payload(report) for report in reports]
@@ -418,19 +448,17 @@ def _run_assess(args: argparse.Namespace) -> int:
 
 
 def _run_run(args: argparse.Namespace) -> int:
-    config = MrCleanConfig.from_toml(Path(args.config))
-    scanner = RepositoryScanner(config)
-    results = scanner.scan(
-        repositories=tuple(args.repo),
-        include_healthy=bool(args.include_healthy),
-    )
-    planner = DispatchPlanner(PolicyEngine(config.policy))
-    candidates = planner.build(results)
+    queue = _build_assessed_queue(args)
     runner = LocalRunner()
-    sessions = runner.run(candidates, pr_number=args.pr, limit=args.limit)
+    sessions = runner.run(
+        queue.candidates,
+        pr_number=args.pr,
+        limit=args.limit,
+        allow_verify=bool(getattr(args, "allow_verify", False)),
+    )
 
     if args.pr is not None and not sessions:
-        print(f"PR #{args.pr} is not present in the dispatch queue.", file=sys.stderr)
+        print(_runnable_queue_error(args.pr, queue, allow_verify=bool(getattr(args, "allow_verify", False))), file=sys.stderr)
         return 1
 
     if args.json:
@@ -449,20 +477,18 @@ def _run_run(args: argparse.Namespace) -> int:
 
 
 def _run_propose(args: argparse.Namespace) -> int:
-    config = MrCleanConfig.from_toml(Path(args.config))
-    scanner = RepositoryScanner(config)
-    results = scanner.scan(
-        repositories=tuple(args.repo),
-        include_healthy=bool(args.include_healthy),
-    )
-    planner = DispatchPlanner(PolicyEngine(config.policy))
-    candidates = planner.build(results)
-    candidate_map = {(candidate.repository, candidate.number): candidate for candidate in candidates}
+    queue = _build_assessed_queue(args)
+    config = queue.config
 
     runner = LocalRunner()
-    sessions = runner.run(candidates, pr_number=args.pr, limit=args.limit)
+    sessions = runner.run(
+        queue.candidates,
+        pr_number=args.pr,
+        limit=args.limit,
+        allow_verify=bool(getattr(args, "allow_verify", False)),
+    )
     if args.pr is not None and not sessions:
-        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        print(_runnable_queue_error(args.pr, queue, allow_verify=bool(getattr(args, "allow_verify", False))), file=sys.stderr)
         return 1
     if not sessions:
         print("No proposal candidates.")
@@ -471,7 +497,7 @@ def _run_propose(args: argparse.Namespace) -> int:
     generator = ProposalGenerator(config)
     proposals = []
     for session in sessions:
-        candidate = candidate_map[(session.repository, session.number)]
+        candidate = queue.candidate_map[(session.repository, session.number)]
         proposals.append(generator.generate(candidate, session))
 
     if args.json:
@@ -486,20 +512,18 @@ def _run_propose(args: argparse.Namespace) -> int:
 
 
 def _run_intent(args: argparse.Namespace) -> int:
-    config = MrCleanConfig.from_toml(Path(args.config))
-    scanner = RepositoryScanner(config)
-    results = scanner.scan(
-        repositories=tuple(args.repo),
-        include_healthy=bool(args.include_healthy),
-    )
-    planner = DispatchPlanner(PolicyEngine(config.policy))
-    candidates = planner.build(results)
-    candidate_map = {(candidate.repository, candidate.number): candidate for candidate in candidates}
+    queue = _build_assessed_queue(args)
+    config = queue.config
 
     runner = LocalRunner()
-    sessions = runner.run(candidates, pr_number=args.pr, limit=args.limit)
+    sessions = runner.run(
+        queue.candidates,
+        pr_number=args.pr,
+        limit=args.limit,
+        allow_verify=bool(getattr(args, "allow_verify", False)),
+    )
     if args.pr is not None and not sessions:
-        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        print(_runnable_queue_error(args.pr, queue, allow_verify=bool(getattr(args, "allow_verify", False))), file=sys.stderr)
         return 1
     if not sessions:
         print("No intent candidates.")
@@ -508,7 +532,7 @@ def _run_intent(args: argparse.Namespace) -> int:
     generator = IntentGenerator(config)
     intents = []
     for session in sessions:
-        candidate = candidate_map[(session.repository, session.number)]
+        candidate = queue.candidate_map[(session.repository, session.number)]
         intents.append(generator.generate(candidate, session))
 
     if args.json:
@@ -525,7 +549,7 @@ def _run_intent(args: argparse.Namespace) -> int:
 def _run_materialize(args: argparse.Namespace) -> int:
     materialized = _build_materialized_batch(args)
     if args.pr is not None and not materialized:
-        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        print(_runnable_queue_error(args.pr, _build_assessed_queue(args), allow_verify=bool(getattr(args, "allow_verify", False))), file=sys.stderr)
         return 1
     if not materialized:
         print("No materialization candidates.")
@@ -545,7 +569,7 @@ def _run_materialize(args: argparse.Namespace) -> int:
 def _run_draft(args: argparse.Namespace) -> int:
     drafts = _build_draft_batch(args)
     if args.pr is not None and not drafts:
-        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        print(_runnable_queue_error(args.pr, _build_assessed_queue(args), allow_verify=bool(getattr(args, "allow_verify", False))), file=sys.stderr)
         return 1
     if not drafts:
         print("No draft candidates.")
@@ -566,7 +590,7 @@ def _run_preview(args: argparse.Namespace) -> int:
     config = MrCleanConfig.from_toml(Path(args.config))
     drafts, previews = _build_preview_batch(args)
     if args.pr is not None and not previews:
-        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        print(_runnable_queue_error(args.pr, _build_assessed_queue(args), allow_verify=bool(getattr(args, "allow_verify", False))), file=sys.stderr)
         return 1
     if not previews:
         print("No preview candidates.")
@@ -646,7 +670,7 @@ def _run_apply(args: argparse.Namespace) -> int:
     return exit_code
 
 
-def _build_materialized_batch(args: argparse.Namespace) -> list[MaterializedIntent]:
+def _build_assessed_queue(args: argparse.Namespace) -> _AssessedQueue:
     config = MrCleanConfig.from_toml(Path(args.config))
     scanner = RepositoryScanner(config)
     results = scanner.scan(
@@ -654,11 +678,47 @@ def _build_materialized_batch(args: argparse.Namespace) -> list[MaterializedInte
         include_healthy=bool(args.include_healthy),
     )
     planner = DispatchPlanner(PolicyEngine(config.policy))
-    candidates = planner.build(results)
-    candidate_map = {(candidate.repository, candidate.number): candidate for candidate in candidates}
+    raw_candidates = planner.build(results)
+    reports = CandidateAssessor().assess(results, raw_candidates)
+    candidates = gate_dispatch_candidates(raw_candidates, reports)
+    return _AssessedQueue(
+        config=config,
+        results=results,
+        candidates=candidates,
+        reports=reports,
+        candidate_map={(candidate.repository, candidate.number): candidate for candidate in candidates},
+        report_map={(report.repository, report.number): report for report in reports},
+    )
+
+
+def _runnable_queue_error(pr_number: int, queue: _AssessedQueue, *, allow_verify: bool) -> str:
+    candidate = next((item for item in queue.candidates if item.number == pr_number), None)
+    if candidate is None:
+        return f"PR #{pr_number} is not present in the dispatch queue."
+    if candidate.assessment_outcome == "hold":
+        return (
+            f"PR #{pr_number} is blocked by the assessment gate with outcome 'hold'. "
+            f"{candidate.assessment_recommended_action}"
+        )
+    if candidate.assessment_outcome == "verify" and not allow_verify:
+        return (
+            f"PR #{pr_number} requires verification before execution. "
+            "Rerun with --allow-verify after explicit operator review."
+        )
+    return f"PR #{pr_number} is not present in the runnable queue."
+
+
+def _build_materialized_batch(args: argparse.Namespace) -> list[MaterializedIntent]:
+    queue = _build_assessed_queue(args)
+    config = queue.config
 
     runner = LocalRunner()
-    sessions = runner.run(candidates, pr_number=args.pr, limit=args.limit)
+    sessions = runner.run(
+        queue.candidates,
+        pr_number=args.pr,
+        limit=args.limit,
+        allow_verify=bool(getattr(args, "allow_verify", False)),
+    )
     if not sessions:
         return []
 
@@ -666,7 +726,7 @@ def _build_materialized_batch(args: argparse.Namespace) -> list[MaterializedInte
     materializer = IntentMaterializer(config)
     materialized = []
     for session in sessions:
-        candidate = candidate_map[(session.repository, session.number)]
+        candidate = queue.candidate_map[(session.repository, session.number)]
         intent = intent_generator.generate(candidate, session)
         materialized.append(materializer.materialize(candidate, intent))
     return materialized
@@ -773,8 +833,31 @@ def _emit_watch_iteration(iteration: int, events: tuple[WatchEvent, ...], json_m
         target = event.current if event.current is not None else event.previous
         if target is not None:
             _print_scan_item(target)
+        assessment = event.current_assessment if event.current_assessment is not None else event.previous_assessment
+        if assessment is not None:
+            print(
+                "Assessment: "
+                f"{assessment.outcome} "
+                f"(false-positive={assessment.false_positive_risk}, "
+                f"runtime={assessment.runtime_risk}, "
+                f"confidence={assessment.confidence})"
+            )
+            print(f"Recommended action: {assessment.recommended_action}")
         if event.kind == "updated" and event.previous is not None and event.current is not None:
             print(f"Previous category: {event.previous.category}")
+        if (
+            event.kind == "updated"
+            and event.previous_assessment is not None
+            and event.current_assessment is not None
+            and _assessment_report_payload(event.previous_assessment) != _assessment_report_payload(event.current_assessment)
+        ):
+            print(
+                "Previous assessment: "
+                f"{event.previous_assessment.outcome} "
+                f"(false-positive={event.previous_assessment.false_positive_risk}, "
+                f"runtime={event.previous_assessment.runtime_risk}, "
+                f"confidence={event.previous_assessment.confidence})"
+            )
         if event.kind == "resolved":
             print("Resolved from queue.")
         print()
@@ -788,6 +871,12 @@ def _watch_event_payload(event: WatchEvent) -> dict[str, object]:
         "number": event.number,
         "current": None if event.current is None else _scan_item_payload(event.current),
         "previous": None if event.previous is None else _scan_item_payload(event.previous),
+        "current_assessment": None
+        if event.current_assessment is None
+        else _assessment_report_payload(event.current_assessment),
+        "previous_assessment": None
+        if event.previous_assessment is None
+        else _assessment_report_payload(event.previous_assessment),
     }
 
 
@@ -803,6 +892,11 @@ def _dispatch_candidate_payload(candidate: DispatchCandidate) -> dict[str, objec
         "priority": candidate.priority,
         "workspace_ready": candidate.workspace_ready,
         "workspace_reason": candidate.workspace_reason,
+        "assessment_outcome": candidate.assessment_outcome,
+        "assessment_false_positive_risk": candidate.assessment_false_positive_risk,
+        "assessment_runtime_risk": candidate.assessment_runtime_risk,
+        "assessment_confidence": candidate.assessment_confidence,
+        "assessment_recommended_action": candidate.assessment_recommended_action,
         "changed_files": list(candidate.changed_files),
         "actions": [
             {
@@ -825,6 +919,12 @@ def _print_dispatch_candidate(candidate: DispatchCandidate) -> None:
     print(f"Priority: {candidate.priority}")
     print(f"Workspace ready: {'yes' if candidate.workspace_ready else 'no'}")
     print(f"Workspace reason: {candidate.workspace_reason}")
+    print(f"Assessment outcome: {candidate.assessment_outcome}")
+    print(f"False-positive risk: {candidate.assessment_false_positive_risk}")
+    print(f"Runtime risk: {candidate.assessment_runtime_risk}")
+    print(f"Assessment confidence: {candidate.assessment_confidence}")
+    if candidate.assessment_recommended_action:
+        print(f"Recommended action: {candidate.assessment_recommended_action}")
     if candidate.changed_files:
         print(f"Changed files: {', '.join(candidate.changed_files)}")
     if not candidate.actions:

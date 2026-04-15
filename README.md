@@ -98,12 +98,17 @@ pretending it has the right diff.
 `watch` builds on the same queue and only emits changes: new queue entries,
 updated entries, and items resolved out of the queue. Use `--iterations 1` for
 a single polling cycle in scripts, or leave it running for continuous
-monitoring.
+monitoring. It also emits assessment deltas, so a PR can produce an update even
+when the raw scan data is unchanged but the risk gate shifts between
+`actionable`, `verify`, and `hold`.
 
 `dispatch` stays dry-run and policy-first. It converts the current queue into
 execution candidates, marks whether each item is `ready`, `inspect_only`, or
 `deferred`, and shows which actions are blocked by policy or by a workspace
-mismatch before any real write step exists.
+mismatch before any real write step exists. Assessment now feeds the queue
+directly: `hold` items are deferred, pushed down the queue, and have their
+non-inspection actions blocked until the operator resolves the signal-quality
+problem.
 
 `assess` is the second lane after audit. It sits between scan/dispatch and the
 execution pipeline, and estimates false-positive risk, runtime risk, signal
@@ -114,13 +119,17 @@ needs verification, or should be held until CI/workspace conditions improve.
 `run` is still non-mutating. It executes only safe prep commands from dispatch
 results, such as GitHub inspection and local diff/status gathering. Actions
 like `push_commit` and `close_pr` remain blocked behind policy and are never run
-by this local runner.
+by this local runner. It now requires an `actionable` assessment by default.
+Use `--allow-verify` only after explicit review if you want to run a
+verify-rated candidate.
 
 `propose` builds on `run`: it gathers the same safe local context, then asks the
 configured model client for a bounded edit proposal. If `provider = "openai"`
 and `OPENAI_API_KEY` is present, MrClean uses the installed OpenAI client.
 Otherwise it falls back to the deterministic stub client and still returns a
-proposal without disabling any protections.
+proposal without disabling any protections. It also requires an `actionable`
+assessment by default. Use `--allow-verify` only when you intentionally want to
+carry a verify-rated candidate further down the pipeline.
 
 `intent` goes one step further and requires machine-readable JSON with a
 validated edit schema. Paths must stay relative, operations are constrained to

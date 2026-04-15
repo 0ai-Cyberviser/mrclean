@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from .dispatch import DispatchCandidate
+from .dispatch import DispatchAction, DispatchCandidate
 from .monitor import ScanResult
 
 
@@ -254,3 +254,77 @@ def _parse_timestamp(value: str) -> datetime | None:
 def _outcome_rank(outcome: str) -> int:
     order = {"actionable": 0, "verify": 1, "hold": 2}
     return order.get(outcome, 9)
+
+
+def gate_dispatch_candidates(
+    candidates: tuple[DispatchCandidate, ...],
+    reports: tuple[AssessmentReport, ...],
+) -> tuple[DispatchCandidate, ...]:
+    report_map = {(report.repository, report.number): report for report in reports}
+    gated: list[DispatchCandidate] = []
+
+    for candidate in candidates:
+        report = report_map.get((candidate.repository, candidate.number))
+        outcome = report.outcome if report is not None else "unknown"
+        status = candidate.status
+        priority = candidate.priority + _priority_adjustment(outcome)
+        actions = candidate.actions
+
+        if outcome == "hold" and candidate.status in {"ready", "inspect_only"}:
+            status = "deferred"
+            actions = tuple(_gate_action(action) for action in candidate.actions)
+
+        gated.append(
+            DispatchCandidate(
+                repository=candidate.repository,
+                number=candidate.number,
+                title=candidate.title,
+                url=candidate.url,
+                branch=candidate.branch,
+                category=candidate.category,
+                status=status,
+                priority=priority,
+                workspace_ready=candidate.workspace_ready,
+                workspace_reason=candidate.workspace_reason,
+                changed_files=candidate.changed_files,
+                actions=actions,
+                assessment_outcome=outcome,
+                assessment_false_positive_risk=report.false_positive_risk if report is not None else "unknown",
+                assessment_runtime_risk=report.runtime_risk if report is not None else "unknown",
+                assessment_confidence=report.confidence if report is not None else 0,
+                assessment_recommended_action=report.recommended_action if report is not None else "",
+            )
+        )
+
+    gated.sort(key=lambda item: (item.priority, _candidate_status_rank(item.status), item.repository.lower(), item.number))
+    return tuple(gated)
+
+
+def _priority_adjustment(outcome: str) -> int:
+    if outcome == "verify":
+        return 1
+    if outcome == "hold":
+        return 10
+    return 0
+
+
+def _candidate_status_rank(status: str) -> int:
+    order = {
+        "ready": 0,
+        "inspect_only": 1,
+        "deferred": 2,
+        "blocked": 3,
+    }
+    return order.get(status, 9)
+
+
+def _gate_action(action: DispatchAction) -> DispatchAction:
+    if action.kind in {"inspect_signal", "review_pr_scope"}:
+        return action
+    return DispatchAction(
+        kind=action.kind,
+        summary=action.summary,
+        allowed=False,
+        reason="blocked by assessment outcome 'hold'",
+        command_hint=action.command_hint,
+    )

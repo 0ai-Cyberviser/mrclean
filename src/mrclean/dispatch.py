@@ -29,6 +29,11 @@ class DispatchCandidate:
     workspace_reason: str
     changed_files: tuple[str, ...]
     actions: tuple[DispatchAction, ...]
+    assessment_outcome: str = "unknown"
+    assessment_false_positive_risk: str = "unknown"
+    assessment_runtime_risk: str = "unknown"
+    assessment_confidence: int = 0
+    assessment_recommended_action: str = ""
 
 
 class DispatchPlanner:

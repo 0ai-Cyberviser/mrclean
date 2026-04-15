@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import unittest
 
-from mrclean.assess import CandidateAssessor
+from mrclean.assess import CandidateAssessor, gate_dispatch_candidates
 from mrclean.dispatch import DispatchAction, DispatchCandidate
 from mrclean.monitor import ScanResult
 
@@ -99,6 +99,20 @@ class CandidateAssessorTests(unittest.TestCase):
 
         self.assertEqual(report.outcome, "hold")
         self.assertIn("newer sibling PR", report.findings[0].summary)
+
+    def test_gate_dispatch_candidates_deprioritizes_and_defers_hold(self) -> None:
+        candidate = _candidate(status="ready")
+        report = CandidateAssessor(now=datetime(2026, 4, 15, 18, 30, tzinfo=timezone.utc)).assess(
+            (_scan_result(category="superseded_candidate"),),
+            (candidate,),
+        )[0]
+
+        gated = gate_dispatch_candidates((candidate,), (report,))[0]
+
+        self.assertEqual(gated.status, "deferred")
+        self.assertEqual(gated.assessment_outcome, "hold")
+        self.assertGreater(gated.priority, candidate.priority)
+        self.assertFalse(gated.actions[0].allowed)
 
 
 if __name__ == "__main__":
