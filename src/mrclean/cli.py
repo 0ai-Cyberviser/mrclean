@@ -7,6 +7,7 @@ import sys
 import time
 
 from .agent import CleanupSignal, MrCleanAgent
+from .assess import AssessmentReport, CandidateAssessor
 from .apply import ApplyTransaction, DraftApplier
 from .config import MrCleanConfig, sample_config
 from .dispatch import DispatchCandidate, DispatchPlanner
@@ -94,6 +95,19 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch_parser.add_argument("--repo", action="append", default=[], help="limit dispatch to a configured repo")
     dispatch_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     dispatch_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+
+    assess_parser = subparsers.add_parser(
+        "assess",
+        help="estimate false-positive risk and runtime issues before proposal or apply",
+    )
+    assess_parser.add_argument("config", help="path to mrclean TOML config")
+    assess_parser.add_argument("--repo", action="append", default=[], help="limit assessment to a configured repo")
+    assess_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    assess_parser.add_argument(
         "--include-healthy",
         action="store_true",
         help="include healthy PRs in the queue instead of only pending or failing ones",
@@ -222,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_watch(args)
     if args.command == "dispatch":
         return _run_dispatch(args)
+    if args.command == "assess":
+        return _run_assess(args)
     if args.command == "run":
         return _run_run(args)
     if args.command == "propose":
@@ -371,6 +387,32 @@ def _run_dispatch(args: argparse.Namespace) -> int:
 
     for candidate in candidates:
         _print_dispatch_candidate(candidate)
+        print()
+    return 0
+
+
+def _run_assess(args: argparse.Namespace) -> int:
+    config = MrCleanConfig.from_toml(Path(args.config))
+    scanner = RepositoryScanner(config)
+    results = scanner.scan(
+        repositories=tuple(args.repo),
+        include_healthy=bool(args.include_healthy),
+    )
+    planner = DispatchPlanner(PolicyEngine(config.policy))
+    candidates = planner.build(results)
+    reports = CandidateAssessor().assess(results, candidates)
+
+    if args.json:
+        payload = [_assessment_report_payload(report) for report in reports]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if not reports:
+        print("No assessment candidates.")
+        return 0
+
+    for report in reports:
+        _print_assessment_report(report)
         print()
     return 0
 
@@ -1053,6 +1095,32 @@ def _preview_bundle_payload(item: PreviewBundle) -> dict[str, object]:
     return preview_bundle_to_payload(item)
 
 
+def _assessment_report_payload(item: AssessmentReport) -> dict[str, object]:
+    return {
+        "repository": item.repository,
+        "number": item.number,
+        "title": item.title,
+        "url": item.url,
+        "branch": item.branch,
+        "category": item.category,
+        "dispatch_status": item.dispatch_status,
+        "outcome": item.outcome,
+        "false_positive_risk": item.false_positive_risk,
+        "runtime_risk": item.runtime_risk,
+        "confidence": item.confidence,
+        "recommended_action": item.recommended_action,
+        "findings": [
+            {
+                "code": finding.code,
+                "severity": finding.severity,
+                "summary": finding.summary,
+                "evidence": finding.evidence,
+            }
+            for finding in item.findings
+        ],
+    }
+
+
 def _print_preview_bundle(item: PreviewBundle) -> None:
     print(f"{item.repository}#{item.number} [preview]")
     print(f"Branch: {item.branch}")
@@ -1084,6 +1152,24 @@ def _print_preview_bundle(item: PreviewBundle) -> None:
         print("Risks:")
         for risk in item.risks:
             print(f"- {risk}")
+
+
+def _print_assessment_report(item: AssessmentReport) -> None:
+    print(f"{item.repository}#{item.number} [assessment:{item.outcome}]")
+    print(f"Title: {item.title}")
+    print(f"Branch: {item.branch}")
+    print(f"Category: {item.category}")
+    print(f"Dispatch status: {item.dispatch_status}")
+    print(f"False-positive risk: {item.false_positive_risk}")
+    print(f"Runtime risk: {item.runtime_risk}")
+    print(f"Confidence: {item.confidence}")
+    print(f"Recommended action: {item.recommended_action}")
+    if item.findings:
+        print("Findings:")
+        for finding in item.findings:
+            print(f"- {finding.severity} {finding.code}: {finding.summary}")
+            print(f"  evidence: {finding.evidence}")
+    print(f"URL: {item.url}")
 
 
 def _apply_transaction_payload(item: ApplyTransaction) -> dict[str, object]:

@@ -33,6 +33,7 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/monitor.py`: repo scanner that turns live PR state into cleanup plans
 - `src/mrclean/watch.py`: polling queue that emits appeared, updated, and resolved events
 - `src/mrclean/dispatch.py`: dry-run executor that turns queue items into guarded action candidates
+- `src/mrclean/assess.py`: deterministic risk assessment for false positives, stale signals, and runtime blockers
 - `src/mrclean/runner.py`: safe local runner for inspect and prep commands from dispatch candidates
 - `src/mrclean/proposals.py`: bounded edit proposal generation from prepared candidates
 - `src/mrclean/intents.py`: validated machine-readable edit intents for a later executor
@@ -41,7 +42,7 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/previews.py`: unified diff rendering from guarded draft bundles
 - `src/mrclean/apply.py`: hash-checked local apply transactions with rollback
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, `propose`, `intent`, `materialize`, `draft`, `preview`, and `apply` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `assess`, `run`, `propose`, `intent`, `materialize`, `draft`, `preview`, and `apply` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -60,6 +61,8 @@ PYTHONPATH=src python -m mrclean watch mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub \
   --interval 30
 PYTHONPATH=src python -m mrclean dispatch mrclean.toml.example \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub
+PYTHONPATH=src python -m mrclean assess mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 PYTHONPATH=src python -m mrclean run mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
@@ -101,6 +104,12 @@ monitoring.
 execution candidates, marks whether each item is `ready`, `inspect_only`, or
 `deferred`, and shows which actions are blocked by policy or by a workspace
 mismatch before any real write step exists.
+
+`assess` is the second lane after audit. It sits between scan/dispatch and the
+execution pipeline, and estimates false-positive risk, runtime risk, signal
+staleness, branch drift, and likely operator error before MrClean proposes or
+applies anything. Use it to decide whether a failing PR is truly actionable,
+needs verification, or should be held until CI/workspace conditions improve.
 
 `run` is still non-mutating. It executes only safe prep commands from dispatch
 results, such as GitHub inspection and local diff/status gathering. Actions
