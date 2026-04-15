@@ -4,10 +4,12 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import time
 
 from .agent import CleanupSignal, MrCleanAgent
 from .config import MrCleanConfig, sample_config
-from .monitor import RepositoryScanner
+from .monitor import RepositoryScanner, ScanResult
+from .watch import RepositoryWatcher, WatchEvent
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +48,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="include healthy PRs in the output instead of only pending or failing ones",
     )
 
+    watch_parser = subparsers.add_parser("watch", help="poll configured repositories and emit queue changes")
+    watch_parser.add_argument("config", help="path to mrclean TOML config")
+    watch_parser.add_argument("--repo", action="append", default=[], help="limit watch to a configured repo")
+    watch_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    watch_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+    watch_parser.add_argument(
+        "--interval",
+        type=float,
+        default=60.0,
+        help="seconds to wait between polls",
+    )
+    watch_parser.add_argument(
+        "--iterations",
+        type=int,
+        default=0,
+        help="number of polls to run; 0 means run until interrupted",
+    )
+
     return parser
 
 
@@ -61,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_plan(args)
     if args.command == "scan":
         return _run_scan(args)
+    if args.command == "watch":
+        return _run_watch(args)
 
     parser.error("unknown command")
     return 2
@@ -141,41 +167,7 @@ def _run_scan(args: argparse.Namespace) -> int:
     )
 
     if args.json:
-        payload = [
-            {
-                "repository": item.repository,
-                "number": item.number,
-                "title": item.title,
-                "url": item.url,
-                "branch": item.branch,
-                "updated_at": item.updated_at,
-                "merge_state_status": item.merge_state_status,
-                "category": item.category,
-                "failing_checks": list(item.failing_checks),
-                "pending_checks": list(item.pending_checks),
-                "changed_files": list(item.changed_files),
-                "workspace_path": item.workspace_path,
-                "workspace_branch": item.workspace_branch,
-                "workspace_notes": list(item.workspace_notes),
-                "superseded_by": item.superseded_by,
-                "plan": None
-                if item.plan is None
-                else {
-                    "goal": item.plan.goal,
-                    "actions": [
-                        {
-                            "kind": action.kind,
-                            "summary": action.summary,
-                            "file_count": action.file_count,
-                            "risky": action.risky,
-                        }
-                        for action in item.plan.actions
-                    ],
-                    "policy_notes": list(item.plan.policy_notes),
-                },
-            }
-            for item in results
-        ]
+        payload = [_scan_item_payload(item) for item in results]
         print(json.dumps(payload, indent=2))
         return 0
 
@@ -184,34 +176,129 @@ def _run_scan(args: argparse.Namespace) -> int:
         return 0
 
     for item in results:
-        print(f"{item.repository}#{item.number} [{item.category}]")
-        print(f"Title: {item.title}")
-        print(f"Branch: {item.branch}")
-        print(f"Merge state: {item.merge_state_status or 'unknown'}")
-        print(f"Updated at: {item.updated_at or 'unknown'}")
-        if item.workspace_path:
-            branch_text = item.workspace_branch or "unknown"
-            print(f"Workspace: {item.workspace_path} (branch: {branch_text})")
-        if item.failing_checks:
-            print(f"Failing checks: {', '.join(item.failing_checks)}")
-        if item.pending_checks:
-            print(f"Pending checks: {', '.join(item.pending_checks)}")
-        if item.changed_files:
-            print(f"Changed files: {', '.join(item.changed_files)}")
-        if item.workspace_notes:
-            print(f"Workspace notes: {'; '.join(item.workspace_notes)}")
-        if item.superseded_by is not None:
-            print(f"Superseded by: PR #{item.superseded_by}")
-        if item.plan is not None:
-            print("Suggested actions:")
-            for action in item.plan.actions:
-                print(f"- {action.kind}: {action.summary}")
-            print("Policy notes:")
-            for note in item.plan.policy_notes:
-                print(f"- {note}")
-        print(f"URL: {item.url}")
+        _print_scan_item(item)
         print()
     return 0
+
+
+def _run_watch(args: argparse.Namespace) -> int:
+    config = MrCleanConfig.from_toml(Path(args.config))
+    watcher = RepositoryWatcher(RepositoryScanner(config))
+    iteration_limit = args.iterations
+    try:
+        while True:
+            events = watcher.poll(
+                repositories=tuple(args.repo),
+                include_healthy=bool(args.include_healthy),
+            )
+            _emit_watch_iteration(watcher.iteration, events, json_mode=bool(args.json))
+
+            if iteration_limit and watcher.iteration >= iteration_limit:
+                return 0
+            time.sleep(max(0.0, args.interval))
+    except KeyboardInterrupt:
+        print("watch interrupted", file=sys.stderr)
+        return 130
+
+
+def _scan_item_payload(item: ScanResult) -> dict[str, object]:
+    return {
+        "repository": item.repository,
+        "number": item.number,
+        "title": item.title,
+        "url": item.url,
+        "branch": item.branch,
+        "updated_at": item.updated_at,
+        "merge_state_status": item.merge_state_status,
+        "category": item.category,
+        "failing_checks": list(item.failing_checks),
+        "pending_checks": list(item.pending_checks),
+        "changed_files": list(item.changed_files),
+        "workspace_path": item.workspace_path,
+        "workspace_branch": item.workspace_branch,
+        "workspace_notes": list(item.workspace_notes),
+        "superseded_by": item.superseded_by,
+        "plan": None
+        if item.plan is None
+        else {
+            "goal": item.plan.goal,
+            "actions": [
+                {
+                    "kind": action.kind,
+                    "summary": action.summary,
+                    "file_count": action.file_count,
+                    "risky": action.risky,
+                }
+                for action in item.plan.actions
+            ],
+            "policy_notes": list(item.plan.policy_notes),
+        },
+    }
+
+
+def _print_scan_item(item: ScanResult) -> None:
+    print(f"{item.repository}#{item.number} [{item.category}]")
+    print(f"Title: {item.title}")
+    print(f"Branch: {item.branch}")
+    print(f"Merge state: {item.merge_state_status or 'unknown'}")
+    print(f"Updated at: {item.updated_at or 'unknown'}")
+    if item.workspace_path:
+        branch_text = item.workspace_branch or "unknown"
+        print(f"Workspace: {item.workspace_path} (branch: {branch_text})")
+    if item.failing_checks:
+        print(f"Failing checks: {', '.join(item.failing_checks)}")
+    if item.pending_checks:
+        print(f"Pending checks: {', '.join(item.pending_checks)}")
+    if item.changed_files:
+        print(f"Changed files: {', '.join(item.changed_files)}")
+    if item.workspace_notes:
+        print(f"Workspace notes: {'; '.join(item.workspace_notes)}")
+    if item.superseded_by is not None:
+        print(f"Superseded by: PR #{item.superseded_by}")
+    if item.plan is not None:
+        print("Suggested actions:")
+        for action in item.plan.actions:
+            print(f"- {action.kind}: {action.summary}")
+        print("Policy notes:")
+        for note in item.plan.policy_notes:
+            print(f"- {note}")
+    print(f"URL: {item.url}")
+
+
+def _emit_watch_iteration(iteration: int, events: tuple[WatchEvent, ...], json_mode: bool) -> None:
+    if json_mode:
+        payload = {
+            "iteration": iteration,
+            "events": [_watch_event_payload(event) for event in events],
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    if not events:
+        print(f"Iteration {iteration}: no queue changes.")
+        return
+
+    for event in events:
+        print(f"Iteration {event.iteration}: {event.kind} {event.repository}#{event.number}")
+        target = event.current if event.current is not None else event.previous
+        if target is not None:
+            _print_scan_item(target)
+        if event.kind == "updated" and event.previous is not None and event.current is not None:
+            print(f"Previous category: {event.previous.category}")
+        if event.kind == "resolved":
+            print("Resolved from queue.")
+        print()
+
+
+def _watch_event_payload(event: WatchEvent) -> dict[str, object]:
+    return {
+        "iteration": event.iteration,
+        "kind": event.kind,
+        "repository": event.repository,
+        "number": event.number,
+        "current": None if event.current is None else _scan_item_payload(event.current),
+        "previous": None if event.previous is None else _scan_item_payload(event.previous),
+    }
 
 
 if __name__ == "__main__":

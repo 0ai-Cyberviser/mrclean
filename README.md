@@ -31,8 +31,9 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/github.py`: GitHub CLI integration for PR and check inspection
 - `src/mrclean/workspace.py`: local git workspace inspection for branch and diff context
 - `src/mrclean/monitor.py`: repo scanner that turns live PR state into cleanup plans
+- `src/mrclean/watch.py`: polling queue that emits appeared, updated, and resolved events
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, and `scan` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, and `watch` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -47,6 +48,9 @@ PYTHONPATH=src python -m mrclean plan mrclean.toml.example \
   --changed-file hancock_agent.py
 PYTHONPATH=src python -m mrclean scan mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
+PYTHONPATH=src python -m mrclean watch mrclean.toml.example \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub \
+  --interval 30
 ```
 
 `scan` requires GitHub CLI authentication via `gh auth login` or an existing
@@ -61,6 +65,11 @@ When a repository has `local_path` configured, `scan` also inspects the local
 checkout. Changed files are only attached when the checkout is already on the
 same branch as the PR head; otherwise MrClean emits a workspace note instead of
 pretending it has the right diff.
+
+`watch` builds on the same queue and only emits changes: new queue entries,
+updated entries, and items resolved out of the queue. Use `--iterations 1` for
+a single polling cycle in scripts, or leave it running for continuous
+monitoring.
 
 ## Design stance
 
