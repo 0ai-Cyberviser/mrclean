@@ -36,12 +36,12 @@ class PullRequestSnapshot:
 
     def failing_checks(self, monitored_checks: tuple[str, ...] = ()) -> tuple[str, ...]:
         return tuple(
-            check.name for check in self.checks if check.is_failing() and _matches_monitored(check.name, monitored_checks)
+            check.name for check in self.checks if check.is_failing() and _matches_monitored(check, monitored_checks)
         )
 
     def pending_checks(self, monitored_checks: tuple[str, ...] = ()) -> tuple[str, ...]:
         return tuple(
-            check.name for check in self.checks if check.is_pending() and _matches_monitored(check.name, monitored_checks)
+            check.name for check in self.checks if check.is_pending() and _matches_monitored(check, monitored_checks)
         )
 
 
@@ -111,9 +111,8 @@ def _run_gh_json(argv: list[str]) -> str:
     return completed.stdout
 
 
-def _matches_monitored(name: str, monitored_checks: tuple[str, ...]) -> bool:
+def _matches_monitored(check: CheckStatus, monitored_checks: tuple[str, ...]) -> bool:
     if not monitored_checks:
         return True
-    lowered_name = name.lower()
-    return any(pattern.lower() in lowered_name for pattern in monitored_checks)
-
+    candidates = tuple(value.lower() for value in (check.name, check.workflow_name) if value)
+    return any(pattern.lower() in candidate for pattern in monitored_checks for candidate in candidates)

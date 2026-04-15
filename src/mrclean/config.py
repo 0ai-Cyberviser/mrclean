@@ -110,7 +110,7 @@ name = "0ai-Cyberviser/Hancock"
 base_branch = "main"
 local_path = "/home/oai/Hancock"
 labels = ["codex"]
-monitored_checks = ["build-linux", "fuzzing"]
+monitored_checks = ["build-linux", "oss-fuzz", "cifuzz", "fuzzing"]
 
 [[repositories]]
 name = "0ai-Cyberviser/CyberViser-ViserHub"
@@ -138,4 +138,3 @@ def _parse_repository(raw: dict[str, object]) -> RepositoryConfig:
         labels=labels,
         monitored_checks=monitored_checks,
     )
-
