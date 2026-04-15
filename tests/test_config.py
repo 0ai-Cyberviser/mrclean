@@ -17,6 +17,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.name, "mrclean")
         self.assertEqual(config.model.name, "gpt-5.4-mini")
         self.assertEqual(len(config.repositories), 2)
+        self.assertEqual(
+            config.get_repository("0ai-Cyberviser/Hancock").monitored_checks,
+            ("build-linux", "oss-fuzz", "cifuzz", "fuzzing"),
+        )
 
     def test_invalid_force_push_policy_is_rejected(self) -> None:
         invalid = """name = "mrclean"
@@ -41,4 +45,3 @@ name = "example/repo"
 
 if __name__ == "__main__":
     unittest.main()
-

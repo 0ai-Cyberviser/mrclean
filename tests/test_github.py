@@ -61,6 +61,13 @@ class GitHubCliTests(unittest.TestCase):
                             "conclusion": "",
                             "workflowName": "Lint",
                         },
+                        {
+                            "__typename": "CheckRun",
+                            "name": "run-fuzzers",
+                            "status": "COMPLETED",
+                            "conclusion": "FAILURE",
+                            "workflowName": "OSS-Fuzz",
+                        },
                     ],
                 }
             ),
@@ -72,9 +79,9 @@ class GitHubCliTests(unittest.TestCase):
         snapshot = GitHubCli(runner=runner).list_open_pull_requests("example/repo")[0]
         self.assertEqual(snapshot.head_ref_name, "fix-ci")
         self.assertEqual(snapshot.failing_checks(("build-linux",)), ("build-linux",))
+        self.assertEqual(snapshot.failing_checks(("oss-fuzz",)), ("run-fuzzers",))
         self.assertEqual(snapshot.pending_checks(("lint",)), ("lint",))
 
 
 if __name__ == "__main__":
     unittest.main()
-

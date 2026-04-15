@@ -118,7 +118,7 @@ name = "0ai-Cyberviser/Hancock"
 base_branch = "main"
 local_path = "/home/oai/Hancock"
 labels = ["codex"]
-monitored_checks = ["build-linux", "fuzzing"]
+monitored_checks = ["build-linux", "oss-fuzz", "cifuzz", "fuzzing"]
 
 [[repositories]]
 name = "0ai-Cyberviser/CyberViser-ViserHub"
