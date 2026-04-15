@@ -33,6 +33,12 @@ class PolicyEngine:
         if action.kind == "force_push" and not self.policy.allow_force_push:
             return PolicyResult(False, "force-push is disabled by policy")
 
+        if action.kind == "apply_patch":
+            if not self.policy.allow_local_apply:
+                return PolicyResult(False, "local apply is disabled by policy")
+            if action.branch in self.policy.protected_branches:
+                return PolicyResult(False, f"branch {action.branch!r} is protected")
+
         if action.kind == "push_commit":
             if not self.policy.allow_push:
                 return PolicyResult(False, "push is disabled by policy")
@@ -57,4 +63,3 @@ class PolicyEngine:
         result = self.review(action)
         if not result.allowed:
             raise PolicyViolation(result.reason)
-

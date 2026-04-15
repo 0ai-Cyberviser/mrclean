@@ -17,6 +17,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.name, "mrclean")
         self.assertEqual(config.model.name, "gpt-5.4-mini")
         self.assertEqual(len(config.repositories), 2)
+        self.assertFalse(config.policy.allow_local_apply)
         self.assertEqual(
             config.get_repository("0ai-Cyberviser/Hancock").monitored_checks,
             ("build-linux", "oss-fuzz", "cifuzz", "fuzzing"),

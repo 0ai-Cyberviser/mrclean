@@ -7,6 +7,7 @@ import sys
 import time
 
 from .agent import CleanupSignal, MrCleanAgent
+from .apply import ApplyTransaction, DraftApplier
 from .config import MrCleanConfig, sample_config
 from .dispatch import DispatchCandidate, DispatchPlanner
 from .drafts import DraftBundle, DraftGenerator
@@ -181,6 +182,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="include healthy PRs in the queue instead of only pending or failing ones",
     )
 
+    apply_parser = subparsers.add_parser(
+        "apply",
+        help="apply a ready preview bundle to the local checkout with policy and hash checks",
+    )
+    apply_parser.add_argument("config", help="path to mrclean TOML config")
+    apply_parser.add_argument("--repo", action="append", default=[], help="limit apply to a configured repo")
+    apply_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
+    apply_parser.add_argument("--limit", type=int, default=1, help="number of candidates to apply when --pr is omitted")
+    apply_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    apply_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+    apply_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="actually write changes after all policy and hash checks pass",
+    )
+
     return parser
 
 
@@ -212,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_draft(args)
     if args.command == "preview":
         return _run_preview(args)
+    if args.command == "apply":
+        return _run_apply(args)
 
     parser.error("unknown command")
     return 2
@@ -497,16 +520,13 @@ def _run_draft(args: argparse.Namespace) -> int:
 
 
 def _run_preview(args: argparse.Namespace) -> int:
-    drafts = _build_draft_batch(args)
-    if args.pr is not None and not drafts:
+    drafts, previews = _build_preview_batch(args)
+    if args.pr is not None and not previews:
         print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
         return 1
-    if not drafts:
+    if not previews:
         print("No preview candidates.")
         return 0
-
-    previewer = DraftPreviewer()
-    previews = [previewer.preview(item) for item in drafts]
 
     if args.json:
         payload = [_preview_bundle_payload(item) for item in previews]
@@ -515,6 +535,41 @@ def _run_preview(args: argparse.Namespace) -> int:
 
     for item in previews:
         _print_preview_bundle(item)
+        print()
+    return 0
+
+
+def _run_apply(args: argparse.Namespace) -> int:
+    if not args.execute:
+        print("refusing to apply without --execute", file=sys.stderr)
+        return 1
+
+    drafts, previews = _build_preview_batch(args)
+    if args.pr is not None and not previews:
+        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        return 1
+    if not previews:
+        print("No apply candidates.")
+        return 0
+
+    config = MrCleanConfig.from_toml(Path(args.config))
+    applier = DraftApplier(PolicyEngine(config.policy))
+    transactions = []
+    for draft, preview in zip(drafts, previews):
+        draft_contents = {
+            operation.path: operation.content
+            for operation in draft.operations
+            if operation.action == "write_file"
+        }
+        transactions.append(applier.apply(preview, draft_contents=draft_contents))
+
+    if args.json:
+        payload = [_apply_transaction_payload(item) for item in transactions]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    for item in transactions:
+        _print_apply_transaction(item)
         print()
     return 0
 
@@ -553,6 +608,15 @@ def _build_draft_batch(args: argparse.Namespace) -> list[DraftBundle]:
     config = MrCleanConfig.from_toml(Path(args.config))
     generator = DraftGenerator(config)
     return [generator.generate(item) for item in materialized]
+
+
+def _build_preview_batch(args: argparse.Namespace) -> tuple[list[DraftBundle], list[PreviewBundle]]:
+    drafts = _build_draft_batch(args)
+    if not drafts:
+        return [], []
+
+    previewer = DraftPreviewer()
+    return drafts, [previewer.preview(item) for item in drafts]
 
 
 def _scan_item_payload(item: ScanResult) -> dict[str, object]:
@@ -1002,6 +1066,59 @@ def _print_preview_bundle(item: PreviewBundle) -> None:
             print("  diff:")
             for line in operation.diff.rstrip().splitlines():
                 print(f"    {line}")
+    if item.validation:
+        print("Validation:")
+        for check in item.validation:
+            print(f"- {check}")
+    if item.risks:
+        print("Risks:")
+        for risk in item.risks:
+            print(f"- {risk}")
+
+
+def _apply_transaction_payload(item: ApplyTransaction) -> dict[str, object]:
+    return {
+        "repository": item.repository,
+        "number": item.number,
+        "branch": item.branch,
+        "status": item.status,
+        "summary": item.summary,
+        "operations": [
+            {
+                "path": operation.path,
+                "action": operation.action,
+                "absolute_path": operation.absolute_path,
+                "status": operation.status,
+                "validation_reason": operation.validation_reason,
+                "expected_sha256": operation.expected_sha256,
+                "before_sha256": operation.before_sha256,
+                "after_sha256": operation.after_sha256,
+                "changed": operation.changed,
+            }
+            for operation in item.operations
+        ],
+        "validation": list(item.validation),
+        "risks": list(item.risks),
+    }
+
+
+def _print_apply_transaction(item: ApplyTransaction) -> None:
+    print(f"{item.repository}#{item.number} [apply]")
+    print(f"Branch: {item.branch}")
+    print(f"Status: {item.status}")
+    print(f"Summary: {item.summary}")
+    print("Operations:")
+    for operation in item.operations:
+        print(f"- {operation.action} {operation.path} [{operation.status}]")
+        print(f"  validation: {operation.validation_reason}")
+        print(f"  absolute path: {operation.absolute_path}")
+        if operation.expected_sha256:
+            print(f"  expected sha256: {operation.expected_sha256}")
+        if operation.before_sha256:
+            print(f"  before sha256: {operation.before_sha256}")
+        if operation.after_sha256:
+            print(f"  after sha256: {operation.after_sha256}")
+        print(f"  changed: {'yes' if operation.changed else 'no'}")
     if item.validation:
         print("Validation:")
         for check in item.validation:

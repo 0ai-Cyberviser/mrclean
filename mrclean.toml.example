@@ -8,6 +8,7 @@ max_tokens = 4096
 
 [policy]
 dry_run = true
+allow_local_apply = false
 allow_push = false
 allow_close_stale_prs = false
 allow_force_push = false

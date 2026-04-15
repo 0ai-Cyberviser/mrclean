@@ -7,6 +7,21 @@ from mrclean.policies import PlannedAction, PolicyEngine
 
 
 class PolicyEngineTests(unittest.TestCase):
+    def test_local_apply_is_blocked_by_default(self) -> None:
+        engine = PolicyEngine(PolicyConfig())
+        result = engine.review(
+            PlannedAction(
+                kind="apply_patch",
+                repository="example/repo",
+                branch="feature",
+                summary="apply a reviewed local patch",
+                file_count=1,
+                risky=True,
+            )
+        )
+        self.assertFalse(result.allowed)
+        self.assertIn("local apply is disabled", result.reason)
+
     def test_push_to_protected_branch_is_blocked(self) -> None:
         engine = PolicyEngine(PolicyConfig(dry_run=False, allow_push=True))
         result = engine.review(
@@ -35,7 +50,21 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertFalse(result.allowed)
         self.assertIn("limit is 2", result.reason)
 
+    def test_local_apply_to_protected_branch_is_blocked(self) -> None:
+        engine = PolicyEngine(PolicyConfig(dry_run=False, allow_local_apply=True))
+        result = engine.review(
+            PlannedAction(
+                kind="apply_patch",
+                repository="example/repo",
+                branch="main",
+                summary="apply a reviewed local patch",
+                file_count=1,
+                risky=True,
+            )
+        )
+        self.assertFalse(result.allowed)
+        self.assertIn("protected", result.reason)
+
 
 if __name__ == "__main__":
     unittest.main()
-

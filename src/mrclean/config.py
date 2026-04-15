@@ -16,6 +16,7 @@ class ModelConfig:
 @dataclass(slots=True)
 class PolicyConfig:
     dry_run: bool = True
+    allow_local_apply: bool = False
     allow_push: bool = False
     allow_close_stale_prs: bool = False
     allow_force_push: bool = False
@@ -66,6 +67,7 @@ class MrCleanConfig:
 
         policy = PolicyConfig(
             dry_run=bool(policy_section.get("dry_run", True)),
+            allow_local_apply=bool(policy_section.get("allow_local_apply", False)),
             allow_push=bool(policy_section.get("allow_push", False)),
             allow_close_stale_prs=bool(policy_section.get("allow_close_stale_prs", False)),
             allow_force_push=bool(policy_section.get("allow_force_push", False)),
@@ -107,6 +109,7 @@ max_tokens = 4096
 
 [policy]
 dry_run = true
+allow_local_apply = false
 allow_push = false
 allow_close_stale_prs = false
 allow_force_push = false

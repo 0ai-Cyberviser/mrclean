@@ -39,8 +39,9 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/materialize.py`: local intent resolution against the checkout with hashes and previews
 - `src/mrclean/drafts.py`: guarded file-write bundle generation with hash preconditions
 - `src/mrclean/previews.py`: unified diff rendering from guarded draft bundles
+- `src/mrclean/apply.py`: hash-checked local apply transactions with rollback
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, `propose`, `intent`, `materialize`, `draft`, and `preview` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, `propose`, `intent`, `materialize`, `draft`, `preview`, and `apply` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -72,6 +73,8 @@ PYTHONPATH=src python -m mrclean draft mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 PYTHONPATH=src python -m mrclean preview mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
+PYTHONPATH=src python -m mrclean apply my-write-enabled.toml \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub --execute
 ```
 
 `scan` requires GitHub CLI authentication via `gh auth login` or an existing
@@ -134,11 +137,19 @@ renders a unified diff only when the on-disk file still matches the validated
 draft input. If the file changed since draft generation, is missing, or is not
 UTF-8 text, MrClean blocks the preview instead of showing a stale diff.
 
+`apply` is the first real write path. It stays disabled by default and requires
+both `policy.allow_local_apply = true` and `policy.dry_run = false`, plus an
+explicit `--execute` flag on the CLI. It applies only ready preview bundles,
+rechecks the expected pre-edit hash immediately before writing, uses atomic file
+replacement for writes, and rolls back partial local changes if a multi-file
+apply fails mid-transaction. It does not push, commit, or close PRs.
+
 ## Design stance
 
 MrClean is intentionally conservative.
 
 - No force-push by default
+- No local apply by default
 - No writes to protected branches
 - No PR closure unless explicitly enabled
 - No wide patches when the file count crosses policy limits
@@ -152,6 +163,7 @@ automation is safe by default.
 The protection model is part of the project, not an optional layer.
 
 - Pushes are disabled by default
+- Local apply is disabled by default
 - Force-push is disabled by default
 - Protected branches stay blocked by policy
 - PR closure is disabled unless explicitly enabled
