@@ -115,4 +115,5 @@ def _matches_monitored(check: CheckStatus, monitored_checks: tuple[str, ...]) ->
     if not monitored_checks:
         return True
     candidates = tuple(value.lower() for value in (check.name, check.workflow_name) if value)
-    return any(pattern.lower() in candidate for pattern in monitored_checks for candidate in candidates)
+    patterns = tuple(pattern.lower() for pattern in monitored_checks)
+    return any(any(pattern in candidate for pattern in patterns) for candidate in candidates)
