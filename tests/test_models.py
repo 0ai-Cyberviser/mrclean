@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from mrclean.models import ChatMessage, CompletionRequest, OpenAIChatModelClient, StubModelClient, build_model_client
@@ -65,6 +66,36 @@ class ModelFactoryTests(unittest.TestCase):
             )
         )
         self.assertIn('"path": "requirements-dev.txt"', response.content)
+
+    def test_stub_model_returns_json_for_draft_prompt(self) -> None:
+        response = StubModelClient().complete(
+            CompletionRequest(
+                model="gpt-5.4-mini",
+                temperature=0.1,
+                max_tokens=1000,
+                messages=(
+                    ChatMessage(role="system", content="You are generating a guarded file-write bundle."),
+                    ChatMessage(
+                        role="user",
+                        content=json.dumps(
+                            {
+                                "repository": "example/repo",
+                                "edits": [
+                                    {
+                                        "path": "Dockerfile",
+                                        "operation": "modify",
+                                        "current_content": "FROM python:3.12\n",
+                                    }
+                                ],
+                            }
+                        ),
+                    ),
+                ),
+            )
+        )
+        self.assertIn('"operations"', response.content)
+        self.assertIn('"action": "write_file"', response.content)
+        self.assertIn('"path": "Dockerfile"', response.content)
 
 
 if __name__ == "__main__":

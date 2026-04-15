@@ -37,8 +37,9 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/proposals.py`: bounded edit proposal generation from prepared candidates
 - `src/mrclean/intents.py`: validated machine-readable edit intents for a later executor
 - `src/mrclean/materialize.py`: local intent resolution against the checkout with hashes and previews
+- `src/mrclean/drafts.py`: guarded file-write bundle generation with hash preconditions
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, `propose`, `intent`, and `materialize` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `run`, `propose`, `intent`, `materialize`, and `draft` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -65,6 +66,8 @@ PYTHONPATH=src python -m mrclean propose mrclean.toml.example \
 PYTHONPATH=src python -m mrclean intent mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub --json
 PYTHONPATH=src python -m mrclean materialize mrclean.toml.example \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub
+PYTHONPATH=src python -m mrclean draft mrclean.toml.example \
   --repo 0ai-Cyberviser/CyberViser-ViserHub
 ```
 
@@ -113,6 +116,14 @@ verifies operation semantics (`modify`/`delete` require an existing file,
 `create` requires a missing file with an existing parent directory), blocks
 paths outside the current branch diff, and emits hashes plus previews without
 writing anything.
+
+`draft` builds on `materialize` and still stays non-mutating. It converts ready
+materialized edits into explicit `write_file` or `delete_file` operations,
+captures the expected pre-edit file hash for each target, and emits content
+hashes plus previews for generated file bodies. If the workspace is not ready,
+the file is not readable as UTF-8 text, or the generated operation drifts from
+the materialized file set, MrClean blocks the draft instead of pretending it is
+safe to apply.
 
 ## Design stance
 

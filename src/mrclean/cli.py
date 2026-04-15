@@ -9,6 +9,7 @@ import time
 from .agent import CleanupSignal, MrCleanAgent
 from .config import MrCleanConfig, sample_config
 from .dispatch import DispatchCandidate, DispatchPlanner
+from .drafts import DraftBundle, DraftGenerator
 from .intents import EditIntent, IntentGenerator
 from .materialize import IntentMaterializer, MaterializedIntent
 from .monitor import RepositoryScanner, ScanResult
@@ -149,6 +150,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="include healthy PRs in the queue instead of only pending or failing ones",
     )
 
+    draft_parser = subparsers.add_parser(
+        "draft",
+        help="convert a materialized intent into explicit file-write/delete operations without applying them",
+    )
+    draft_parser.add_argument("config", help="path to mrclean TOML config")
+    draft_parser.add_argument("--repo", action="append", default=[], help="limit draft generation to a configured repo")
+    draft_parser.add_argument("--pr", type=int, help="target one PR number from the dispatch queue")
+    draft_parser.add_argument("--limit", type=int, default=1, help="number of candidates to draft when --pr is omitted")
+    draft_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    draft_parser.add_argument(
+        "--include-healthy",
+        action="store_true",
+        help="include healthy PRs in the queue instead of only pending or failing ones",
+    )
+
     return parser
 
 
@@ -176,6 +192,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_intent(args)
     if args.command == "materialize":
         return _run_materialize(args)
+    if args.command == "draft":
+        return _run_draft(args)
 
     parser.error("unknown command")
     return 2
@@ -421,6 +439,50 @@ def _run_intent(args: argparse.Namespace) -> int:
 
 
 def _run_materialize(args: argparse.Namespace) -> int:
+    materialized = _build_materialized_batch(args)
+    if args.pr is not None and not materialized:
+        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        return 1
+    if not materialized:
+        print("No materialization candidates.")
+        return 0
+
+    if args.json:
+        payload = [_materialized_intent_payload(item) for item in materialized]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    for item in materialized:
+        _print_materialized_intent(item)
+        print()
+    return 0
+
+
+def _run_draft(args: argparse.Namespace) -> int:
+    materialized = _build_materialized_batch(args)
+    if args.pr is not None and not materialized:
+        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
+        return 1
+    if not materialized:
+        print("No draft candidates.")
+        return 0
+
+    config = MrCleanConfig.from_toml(Path(args.config))
+    generator = DraftGenerator(config)
+    drafts = [generator.generate(item) for item in materialized]
+
+    if args.json:
+        payload = [_draft_bundle_payload(item) for item in drafts]
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    for item in drafts:
+        _print_draft_bundle(item)
+        print()
+    return 0
+
+
+def _build_materialized_batch(args: argparse.Namespace) -> list[MaterializedIntent]:
     config = MrCleanConfig.from_toml(Path(args.config))
     scanner = RepositoryScanner(config)
     results = scanner.scan(
@@ -433,12 +495,8 @@ def _run_materialize(args: argparse.Namespace) -> int:
 
     runner = LocalRunner()
     sessions = runner.run(candidates, pr_number=args.pr, limit=args.limit)
-    if args.pr is not None and not sessions:
-        print(f"PR #{args.pr} is not present in the runnable queue.", file=sys.stderr)
-        return 1
     if not sessions:
-        print("No materialization candidates.")
-        return 0
+        return []
 
     intent_generator = IntentGenerator(config)
     materializer = IntentMaterializer(config)
@@ -447,16 +505,7 @@ def _run_materialize(args: argparse.Namespace) -> int:
         candidate = candidate_map[(session.repository, session.number)]
         intent = intent_generator.generate(candidate, session)
         materialized.append(materializer.materialize(candidate, intent))
-
-    if args.json:
-        payload = [_materialized_intent_payload(item) for item in materialized]
-        print(json.dumps(payload, indent=2))
-        return 0
-
-    for item in materialized:
-        _print_materialized_intent(item)
-        print()
-    return 0
+    return materialized
 
 
 def _scan_item_payload(item: ScanResult) -> dict[str, object]:
@@ -784,6 +833,71 @@ def _print_materialized_intent(item: MaterializedIntent) -> None:
                     print(f"    {line}")
         else:
             print("  preview: <file does not exist>")
+    if item.validation:
+        print("Validation:")
+        for check in item.validation:
+            print(f"- {check}")
+    if item.risks:
+        print("Risks:")
+        for risk in item.risks:
+            print(f"- {risk}")
+
+
+def _draft_bundle_payload(item: DraftBundle) -> dict[str, object]:
+    return {
+        "repository": item.repository,
+        "number": item.number,
+        "branch": item.branch,
+        "status": item.status,
+        "summary": item.summary,
+        "operations": [
+            {
+                "path": operation.path,
+                "requested_operation": operation.requested_operation,
+                "action": operation.action,
+                "summary": operation.summary,
+                "reason": operation.reason,
+                "absolute_path": operation.absolute_path,
+                "status": operation.status,
+                "validation_reason": operation.validation_reason,
+                "expected_sha256": operation.expected_sha256,
+                "content_sha256": operation.content_sha256,
+                "content_bytes": operation.content_bytes,
+                "content_preview": operation.content_preview,
+                "content": operation.content,
+            }
+            for operation in item.operations
+        ],
+        "validation": list(item.validation),
+        "risks": list(item.risks),
+        "model_provider": item.model_provider,
+        "model_name": item.model_name,
+        "raw": item.raw,
+    }
+
+
+def _print_draft_bundle(item: DraftBundle) -> None:
+    print(f"{item.repository}#{item.number} [draft]")
+    print(f"Branch: {item.branch}")
+    print(f"Status: {item.status}")
+    print(f"Summary: {item.summary}")
+    print(f"Model: {item.model_provider} {item.model_name}".rstrip())
+    print("Operations:")
+    for operation in item.operations:
+        print(f"- {operation.action} {operation.path} [{operation.status}]")
+        print(f"  requested operation: {operation.requested_operation}")
+        print(f"  validation: {operation.validation_reason}")
+        print(f"  absolute path: {operation.absolute_path}")
+        if operation.expected_sha256:
+            print(f"  expected sha256: {operation.expected_sha256}")
+        if operation.content_sha256:
+            print(f"  content sha256: {operation.content_sha256}")
+        if operation.content_bytes is not None:
+            print(f"  content bytes: {operation.content_bytes}")
+        if operation.content_preview:
+            print("  content preview:")
+            for line in operation.content_preview.rstrip().splitlines():
+                print(f"    {line}")
     if item.validation:
         print("Validation:")
         for check in item.validation:

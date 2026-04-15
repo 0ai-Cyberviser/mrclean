@@ -57,6 +57,8 @@ class StubModelClient:
                 f"- Stub output only. Review the captured context manually before editing.\n"
                 f"- Context source: {summary[:240]}"
             )
+        elif "guarded file-write bundle" in system_prompt.lower():
+            content = json.dumps(_build_stub_draft_payload(summary), indent=2)
         elif "machine-readable edit intent" in system_prompt.lower():
             content = json.dumps(
                 {
@@ -145,3 +147,98 @@ def _extract_first_changed_file(summary: str) -> str:
             if file_path and file_path.lower() != "none":
                 return file_path
     return ""
+
+
+def _build_stub_draft_payload(summary: str) -> dict[str, Any]:
+    payload = _parse_json_object(summary)
+    edits = payload.get("edits", [])
+    operations: list[dict[str, Any]] = []
+    if isinstance(edits, list):
+        for item in edits:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path", "")).strip()
+            operation = str(item.get("operation", "modify")).strip() or "modify"
+            current_content = item.get("current_content")
+            current_text = current_content if isinstance(current_content, str) else ""
+            action = "delete_file" if operation == "delete" else "write_file"
+            entry: dict[str, Any] = {
+                "path": path or "REVIEW_REQUIRED",
+                "action": action,
+                "summary": "Draft the narrowest reversible file change for the active signal.",
+                "reason": f"Stub output only. Use the materialized file target from context: {(path or 'REVIEW_REQUIRED')[:180]}",
+            }
+            if action == "write_file":
+                entry["content"] = _stub_write_content(path, current_text, operation)
+            operations.append(entry)
+
+    if not operations:
+        operations.append(
+            {
+                "path": "REVIEW_REQUIRED",
+                "action": "write_file",
+                "summary": "Draft a narrow fix for manual review.",
+                "reason": "Stub output only. No materialized edit targets were provided in the context.",
+                "content": "# MrClean stub draft: replace with a reviewed fix.\n",
+            }
+        )
+
+    return {
+        "summary": "Convert the materialized intent into explicit write/delete operations without applying them.",
+        "operations": operations,
+        "validation": [
+            "Re-run the smallest targeted tests or CI checks related to the active signal.",
+            "Verify the expected file hashes still match before applying any generated write step.",
+        ],
+        "risks": [
+            "Stub output only. Review the generated file content before any apply step.",
+            "Do not widen scope beyond the materialized file targets.",
+        ],
+    }
+
+
+def _stub_write_content(path: str, current_content: str, operation: str) -> str:
+    prefix = _comment_prefix_for_path(path)
+    note = f"{prefix} MrClean stub draft: replace with the reviewed narrow fix.\n"
+    if operation == "create" and not current_content:
+        return note
+    if not current_content:
+        return note
+    if current_content.endswith("\n"):
+        return current_content + note
+    return current_content + "\n" + note
+
+
+def _comment_prefix_for_path(path: str) -> str:
+    normalized = path.lower()
+    if normalized.endswith(
+        (
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".java",
+            ".c",
+            ".cc",
+            ".cpp",
+            ".h",
+            ".hpp",
+            ".go",
+            ".rs",
+            ".swift",
+            ".kt",
+            ".kts",
+        )
+    ):
+        return "//"
+    return "#"
+
+
+def _parse_json_object(summary: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(summary)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
