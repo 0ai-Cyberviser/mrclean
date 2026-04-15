@@ -16,27 +16,43 @@ Secondary contact: `cyberviser@proton.me`
 - Applies safety policy before allowing pushes, PR closure, or risky edits
 - Ships with a deterministic stub model client so the project runs without an
   external model provider on day one
+- Scans live GitHub PR state through the `gh` CLI and only drafts fix plans for
+  PRs that actually need attention
+- Detects older PRs that appear superseded by a newer branch failing the same
+  monitored checks, so the operator can close stale work intentionally
 
 ## Project layout
 
 - `src/mrclean/config.py`: config loading and validation
 - `src/mrclean/policies.py`: policy engine and action gating
 - `src/mrclean/models.py`: model client abstraction
+- `src/mrclean/github.py`: GitHub CLI integration for PR and check inspection
+- `src/mrclean/monitor.py`: repo scanner that turns live PR state into cleanup plans
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, and `plan` commands
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, and `scan` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
 
 ```bash
 cd /home/oai/mrclean
-PYTHONPATH=src python -m mrclean.cli validate mrclean.toml.example
-PYTHONPATH=src python -m mrclean.cli plan mrclean.toml.example \
+PYTHONPATH=src python -m mrclean validate mrclean.toml.example
+PYTHONPATH=src python -m mrclean plan mrclean.toml.example \
   --repo 0ai-Cyberviser/Hancock \
   --goal "stabilize failing CI and keep patches narrow" \
   --check build-linux \
   --changed-file hancock_agent.py
+PYTHONPATH=src python -m mrclean scan mrclean.toml.example \
+  --repo 0ai-Cyberviser/CyberViser-ViserHub
 ```
+
+`scan` requires GitHub CLI authentication via `gh auth login` or an existing
+authenticated `gh` session.
+
+When multiple open PRs in one repo are failing the same monitored checks,
+MrClean keeps the newest PR in `needs_attention` and marks older siblings as
+`superseded_candidate`. Those stale-close recommendations still go through the
+same dry-run and close-PR policy gates.
 
 ## Design stance
 
