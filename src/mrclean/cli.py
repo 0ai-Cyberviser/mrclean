@@ -153,6 +153,10 @@ def _run_scan(args: argparse.Namespace) -> int:
                 "category": item.category,
                 "failing_checks": list(item.failing_checks),
                 "pending_checks": list(item.pending_checks),
+                "changed_files": list(item.changed_files),
+                "workspace_path": item.workspace_path,
+                "workspace_branch": item.workspace_branch,
+                "workspace_notes": list(item.workspace_notes),
                 "superseded_by": item.superseded_by,
                 "plan": None
                 if item.plan is None
@@ -185,10 +189,17 @@ def _run_scan(args: argparse.Namespace) -> int:
         print(f"Branch: {item.branch}")
         print(f"Merge state: {item.merge_state_status or 'unknown'}")
         print(f"Updated at: {item.updated_at or 'unknown'}")
+        if item.workspace_path:
+            branch_text = item.workspace_branch or "unknown"
+            print(f"Workspace: {item.workspace_path} (branch: {branch_text})")
         if item.failing_checks:
             print(f"Failing checks: {', '.join(item.failing_checks)}")
         if item.pending_checks:
             print(f"Pending checks: {', '.join(item.pending_checks)}")
+        if item.changed_files:
+            print(f"Changed files: {', '.join(item.changed_files)}")
+        if item.workspace_notes:
+            print(f"Workspace notes: {'; '.join(item.workspace_notes)}")
         if item.superseded_by is not None:
             print(f"Superseded by: PR #{item.superseded_by}")
         if item.plan is not None:

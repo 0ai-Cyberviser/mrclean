@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from .agent import AgentPlan, CleanupSignal, MrCleanAgent
 from .config import MrCleanConfig, RepositoryConfig
 from .github import GitHubCli, PullRequestSnapshot
+from .workspace import GitWorkspaceInspector, WorkspaceSnapshot
 
 
 @dataclass(slots=True)
@@ -20,14 +21,24 @@ class ScanResult:
     category: str
     failing_checks: tuple[str, ...]
     pending_checks: tuple[str, ...]
+    changed_files: tuple[str, ...] = ()
+    workspace_path: str = ""
+    workspace_branch: str = ""
+    workspace_notes: tuple[str, ...] = ()
     superseded_by: int | None = None
     plan: AgentPlan | None = None
 
 
 class RepositoryScanner:
-    def __init__(self, config: MrCleanConfig, github: GitHubCli | None = None) -> None:
+    def __init__(
+        self,
+        config: MrCleanConfig,
+        github: GitHubCli | None = None,
+        workspace: GitWorkspaceInspector | None = None,
+    ) -> None:
         self.config = config
         self.github = github or GitHubCli()
+        self.workspace = workspace or GitWorkspaceInspector()
         self.agent = MrCleanAgent(config)
 
     def scan(
@@ -60,6 +71,8 @@ class RepositoryScanner:
     ) -> ScanResult | None:
         failing = snapshot.failing_checks(repository.monitored_checks)
         pending = snapshot.pending_checks(repository.monitored_checks)
+        workspace_snapshot = self.workspace.inspect(repository, snapshot.head_ref_name)
+        changed_files, workspace_path, workspace_branch, workspace_notes = _workspace_fields(workspace_snapshot)
 
         category = "healthy"
         plan: AgentPlan | None = None
@@ -71,7 +84,8 @@ class RepositoryScanner:
                     goal=f"stabilize failing CI for PR #{snapshot.number}",
                     branch=snapshot.head_ref_name or repository.base_branch,
                     failing_checks=failing,
-                    notes=f"PR #{snapshot.number}: {snapshot.title}",
+                    changed_files=changed_files,
+                    notes=_build_notes(snapshot.number, snapshot.title, workspace_notes),
                 )
             )
         elif pending:
@@ -90,6 +104,10 @@ class RepositoryScanner:
             category=category,
             failing_checks=failing,
             pending_checks=pending,
+            changed_files=changed_files,
+            workspace_path=workspace_path,
+            workspace_branch=workspace_branch,
+            workspace_notes=workspace_notes,
             plan=plan,
         )
 
@@ -119,12 +137,33 @@ class RepositoryScanner:
                         repository=repository,
                         goal=f"review stale PR #{stale.number} and confirm it is superseded",
                         branch=stale.branch,
-                        notes=(
-                            f"PR #{stale.number} appears older than PR #{newest.number} and is failing "
-                            f"the same monitored checks: {', '.join(stale.failing_checks)}"
+                        notes=_build_notes(
+                            stale.number,
+                            stale.title,
+                            stale.workspace_notes
+                            + (
+                                f"PR #{stale.number} appears older than PR #{newest.number} and is failing "
+                                f"the same monitored checks: {', '.join(stale.failing_checks)}",
+                            ),
                         ),
                     )
                 )
+
+
+def _build_notes(number: int, title: str, extra_notes: tuple[str, ...]) -> str:
+    notes = [f"PR #{number}: {title}", *extra_notes]
+    return " | ".join(note for note in notes if note)
+
+
+def _workspace_fields(snapshot: WorkspaceSnapshot | None) -> tuple[tuple[str, ...], str, str, tuple[str, ...]]:
+    if snapshot is None:
+        return (), "", "", ()
+    return (
+        snapshot.changed_files,
+        snapshot.path,
+        snapshot.current_branch,
+        snapshot.notes,
+    )
 
 
 def _normalize_checks(checks: tuple[str, ...]) -> tuple[str, ...]:

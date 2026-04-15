@@ -20,6 +20,8 @@ Secondary contact: `cyberviser@proton.me`
   PRs that actually need attention
 - Detects older PRs that appear superseded by a newer branch failing the same
   monitored checks, so the operator can close stale work intentionally
+- Reads configured local checkouts to attach real changed-file context and
+  branch-mismatch warnings to scan results
 
 ## Project layout
 
@@ -27,6 +29,7 @@ Secondary contact: `cyberviser@proton.me`
 - `src/mrclean/policies.py`: policy engine and action gating
 - `src/mrclean/models.py`: model client abstraction
 - `src/mrclean/github.py`: GitHub CLI integration for PR and check inspection
+- `src/mrclean/workspace.py`: local git workspace inspection for branch and diff context
 - `src/mrclean/monitor.py`: repo scanner that turns live PR state into cleanup plans
 - `src/mrclean/agent.py`: MrClean planning agent
 - `src/mrclean/cli.py`: `init`, `validate`, `plan`, and `scan` commands
@@ -53,6 +56,11 @@ When multiple open PRs in one repo are failing the same monitored checks,
 MrClean keeps the newest PR in `needs_attention` and marks older siblings as
 `superseded_candidate`. Those stale-close recommendations still go through the
 same dry-run and close-PR policy gates.
+
+When a repository has `local_path` configured, `scan` also inspects the local
+checkout. Changed files are only attached when the checkout is already on the
+same branch as the PR head; otherwise MrClean emits a workspace note instead of
+pretending it has the right diff.
 
 ## Design stance
 

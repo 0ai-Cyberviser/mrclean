@@ -7,6 +7,7 @@ import unittest
 from mrclean.config import MrCleanConfig, sample_config
 from mrclean.github import CheckStatus, PullRequestSnapshot
 from mrclean.monitor import RepositoryScanner
+from mrclean.workspace import WorkspaceSnapshot
 
 
 class FakeGitHub:
@@ -15,6 +16,14 @@ class FakeGitHub:
 
     def list_open_pull_requests(self, repository: str) -> tuple[PullRequestSnapshot, ...]:
         return self.snapshots.get(repository, ())
+
+
+class FakeWorkspace:
+    def __init__(self, snapshots: dict[tuple[str, str], WorkspaceSnapshot | None]) -> None:
+        self.snapshots = snapshots
+
+    def inspect(self, repository, pr_branch: str) -> WorkspaceSnapshot | None:
+        return self.snapshots.get((repository.name, pr_branch))
 
 
 class MonitorTests(unittest.TestCase):
@@ -57,7 +66,29 @@ class MonitorTests(unittest.TestCase):
             }
         )
 
-        results = RepositoryScanner(config, github=github).scan()
+        workspace = FakeWorkspace(
+            {
+                (
+                    "0ai-Cyberviser/Hancock",
+                    "codex/diag",
+                ): WorkspaceSnapshot(
+                    path="/home/oai/Hancock",
+                    current_branch="codex/diag",
+                    base_ref="origin/main",
+                    changed_files=("hancock_agent.py", "tests/test_hancock_api.py"),
+                ),
+                (
+                    "0ai-Cyberviser/CyberViser-ViserHub",
+                    "copilot/fix-fuzzing",
+                ): WorkspaceSnapshot(
+                    path="/home/oai/pr-audits/CyberViser-ViserHub",
+                    current_branch="copilot/15315-awaiting-approval",
+                    notes=("local checkout is on 'copilot/15315-awaiting-approval', expected 'copilot/fix-fuzzing'",),
+                ),
+            }
+        )
+
+        results = RepositoryScanner(config, github=github, workspace=workspace).scan()
         self.assertEqual(len(results), 2)
 
         failing = next(item for item in results if item.category == "needs_attention")
@@ -65,8 +96,14 @@ class MonitorTests(unittest.TestCase):
 
         self.assertEqual(failing.number, 60)
         self.assertIsNotNone(failing.plan)
+        self.assertEqual(failing.changed_files, ("hancock_agent.py", "tests/test_hancock_api.py"))
+        self.assertEqual(failing.workspace_branch, "codex/diag")
         self.assertEqual(pending.number, 32)
         self.assertIsNone(pending.plan)
+        self.assertEqual(
+            pending.workspace_notes,
+            ("local checkout is on 'copilot/15315-awaiting-approval', expected 'copilot/fix-fuzzing'",),
+        )
 
     def test_scan_marks_older_duplicate_failures_as_superseded_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -105,7 +142,7 @@ class MonitorTests(unittest.TestCase):
             }
         )
 
-        results = RepositoryScanner(config, github=github).scan(
+        results = RepositoryScanner(config, github=github, workspace=FakeWorkspace({})).scan(
             repositories=("0ai-Cyberviser/CyberViser-ViserHub",)
         )
         self.assertEqual(len(results), 2)
