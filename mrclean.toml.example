@@ -1,0 +1,30 @@
+name = "mrclean"
+
+[model]
+provider = "openai"
+name = "gpt-5.4-mini"
+temperature = 0.1
+max_tokens = 4096
+
+[policy]
+dry_run = true
+allow_push = false
+allow_close_stale_prs = false
+allow_force_push = false
+max_patch_files = 5
+protected_branches = ["main", "master"]
+
+[[repositories]]
+name = "0ai-Cyberviser/Hancock"
+base_branch = "main"
+local_path = "/home/oai/Hancock"
+labels = ["codex"]
+monitored_checks = ["build-linux", "fuzzing"]
+
+[[repositories]]
+name = "0ai-Cyberviser/CyberViser-ViserHub"
+base_branch = "main"
+local_path = "/home/oai/pr-audits/CyberViser-ViserHub"
+labels = ["copilot"]
+monitored_checks = ["fuzz-pr", "build-linux"]
+

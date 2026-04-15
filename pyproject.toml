@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mrclean"
+version = "0.1.0"
+description = "Policy-first agent scaffold for automated PR and repository cleanup."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Johnny Watters", email = "0ai@cyberviserai.com" }
+]
+maintainers = [
+  { name = "0ai-Cyberviser", email = "cyberviser@proton.me" }
+]
+dependencies = []
+
+[project.scripts]
+mrclean = "mrclean.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
