@@ -11,8 +11,8 @@ class GitHubCliTests(unittest.TestCase):
         responses = {
             (
                 "gh",
-                "search",
-                "prs",
+                "pr",
+                "list",
                 "--repo",
                 "example/repo",
                 "--state",
@@ -81,6 +81,137 @@ class GitHubCliTests(unittest.TestCase):
         self.assertEqual(snapshot.failing_checks(("build-linux",)), ("build-linux",))
         self.assertEqual(snapshot.failing_checks(("oss-fuzz",)), ("run-fuzzers",))
         self.assertEqual(snapshot.pending_checks(("lint",)), ("lint",))
+
+    def test_list_open_pull_requests_applies_author_filter(self) -> None:
+        expected = (
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "example/repo",
+            "--state",
+            "open",
+            "--author",
+            "0ai-Cyberviser",
+            "--json",
+            "number,title,updatedAt,url",
+        )
+        responses = {
+            expected: "[]",
+        }
+
+        def runner(argv: list[str]) -> str:
+            return responses[tuple(argv)]
+
+        snapshots = GitHubCli(runner=runner).list_open_pull_requests(
+            "example/repo",
+            authors=("0ai-Cyberviser",),
+        )
+        self.assertEqual(snapshots, ())
+
+    def test_list_open_pull_requests_merges_multiple_authors(self) -> None:
+        responses = {
+            (
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                "example/repo",
+                "--state",
+                "open",
+                "--author",
+                "0ai-Cyberviser",
+                "--json",
+                "number,title,updatedAt,url",
+            ): json.dumps(
+                [
+                    {
+                        "number": 7,
+                        "title": "Fix CI",
+                        "updatedAt": "2026-04-15T18:00:00Z",
+                        "url": "https://github.com/example/repo/pull/7",
+                    }
+                ]
+            ),
+            (
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                "example/repo",
+                "--state",
+                "open",
+                "--author",
+                "app/copilot-swe-agent",
+                "--json",
+                "number,title,updatedAt,url",
+            ): json.dumps(
+                [
+                    {
+                        "number": 7,
+                        "title": "Fix CI",
+                        "updatedAt": "2026-04-15T18:00:00Z",
+                        "url": "https://github.com/example/repo/pull/7",
+                    },
+                    {
+                        "number": 8,
+                        "title": "Fix fuzzing",
+                        "updatedAt": "2026-04-15T19:00:00Z",
+                        "url": "https://github.com/example/repo/pull/8",
+                    },
+                ]
+            ),
+            (
+                "gh",
+                "pr",
+                "view",
+                "8",
+                "--repo",
+                "example/repo",
+                "--json",
+                "headRefName,headRefOid,mergeStateStatus,statusCheckRollup,title,updatedAt,url",
+            ): json.dumps(
+                {
+                    "headRefName": "fix-fuzzing",
+                    "headRefOid": "def456",
+                    "mergeStateStatus": "UNSTABLE",
+                    "title": "Fix fuzzing",
+                    "updatedAt": "2026-04-15T19:00:00Z",
+                    "url": "https://github.com/example/repo/pull/8",
+                    "statusCheckRollup": [],
+                }
+            ),
+            (
+                "gh",
+                "pr",
+                "view",
+                "7",
+                "--repo",
+                "example/repo",
+                "--json",
+                "headRefName,headRefOid,mergeStateStatus,statusCheckRollup,title,updatedAt,url",
+            ): json.dumps(
+                {
+                    "headRefName": "fix-ci",
+                    "headRefOid": "abc123",
+                    "mergeStateStatus": "UNSTABLE",
+                    "title": "Fix CI",
+                    "updatedAt": "2026-04-15T18:00:00Z",
+                    "url": "https://github.com/example/repo/pull/7",
+                    "statusCheckRollup": [],
+                }
+            ),
+        }
+
+        def runner(argv: list[str]) -> str:
+            return responses[tuple(argv)]
+
+        snapshots = GitHubCli(runner=runner).list_open_pull_requests(
+            "example/repo",
+            authors=("0ai-Cyberviser", "app/copilot-swe-agent"),
+        )
+        self.assertEqual(tuple(snapshot.number for snapshot in snapshots), (8, 7))
+        self.assertEqual(len(snapshots), 2)
 
 
 if __name__ == "__main__":

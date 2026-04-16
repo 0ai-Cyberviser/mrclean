@@ -16,13 +16,21 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.name, "mrclean")
         self.assertEqual(config.model.name, "gpt-5.4-mini")
-        self.assertEqual(len(config.repositories), 2)
+        self.assertEqual(len(config.repositories), 4)
         self.assertFalse(config.policy.allow_local_apply)
         self.assertTrue(config.policy.require_signed_preview_artifacts)
         self.assertEqual(config.policy.artifact_signing_key_env, "MRCLEAN_ARTIFACT_SIGNING_KEY")
         self.assertEqual(
             config.get_repository("0ai-Cyberviser/Hancock").monitored_checks,
             ("build-linux", "oss-fuzz", "cifuzz", "fuzzing"),
+        )
+        self.assertEqual(
+            config.get_repository("xai-org/grok-1").authors,
+            ("0ai-Cyberviser",),
+        )
+        self.assertEqual(
+            config.get_repository("0ai-Cyberviser/CyberViser-ViserHub").authors,
+            ("0ai-Cyberviser", "app/copilot-swe-agent"),
         )
 
     def test_invalid_force_push_policy_is_rejected(self) -> None:

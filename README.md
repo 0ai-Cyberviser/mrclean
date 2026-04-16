@@ -18,6 +18,8 @@ Secondary contact: `cyberviser@proton.me`
   external model provider on day one
 - Scans live GitHub PR state through the `gh` CLI and only drafts fix plans for
   PRs that actually need attention
+- Supports repository-level PR author filters so upstream repo monitoring can
+  stay scoped to the operator's own PRs instead of scanning every open branch
 - Detects older PRs that appear superseded by a newer branch failing the same
   monitored checks, so the operator can close stale work intentionally
 - Reads configured local checkouts to attach real changed-file context and
@@ -84,6 +86,12 @@ PYTHONPATH=src python -m mrclean apply my-write-enabled.toml \
 
 `scan` requires GitHub CLI authentication via `gh auth login` or an existing
 authenticated `gh` session.
+
+Set `authors = ["your-github-login"]` in a `[[repositories]]` block when you
+want MrClean to monitor only specific PR authors in an upstream repo. This
+matters for repos like `google/oss-fuzz` where scanning every open PR would
+make the queue noisy and unsafe. For app-authored PRs, use the real login such
+as `app/copilot-swe-agent`.
 
 When multiple open PRs in one repo are failing the same monitored checks,
 MrClean keeps the newest PR in `needs_attention` and marks older siblings as

@@ -14,7 +14,12 @@ class FakeGitHub:
     def __init__(self, snapshots: dict[str, tuple[PullRequestSnapshot, ...]]) -> None:
         self.snapshots = snapshots
 
-    def list_open_pull_requests(self, repository: str) -> tuple[PullRequestSnapshot, ...]:
+    def list_open_pull_requests(
+        self,
+        repository: str,
+        *,
+        authors: tuple[str, ...] = (),
+    ) -> tuple[PullRequestSnapshot, ...]:
         return self.snapshots.get(repository, ())
 
 

@@ -20,6 +20,7 @@ protected_branches = ["main", "master"]
 [[repositories]]
 name = "0ai-Cyberviser/Hancock"
 base_branch = "main"
+authors = ["0ai-Cyberviser"]
 local_path = "/home/oai/Hancock"
 labels = ["codex"]
 monitored_checks = ["build-linux", "oss-fuzz", "cifuzz", "fuzzing"]
@@ -27,6 +28,22 @@ monitored_checks = ["build-linux", "oss-fuzz", "cifuzz", "fuzzing"]
 [[repositories]]
 name = "0ai-Cyberviser/CyberViser-ViserHub"
 base_branch = "main"
+authors = ["0ai-Cyberviser", "app/copilot-swe-agent"]
 local_path = "/home/oai/pr-audits/CyberViser-ViserHub"
 labels = ["copilot"]
 monitored_checks = ["fuzz-pr", "build-linux"]
+
+[[repositories]]
+name = "xai-org/grok-1"
+base_branch = "main"
+authors = ["0ai-Cyberviser"]
+local_path = "/home/oai/pr-audits/grok-1"
+labels = ["codex"]
+monitored_checks = ["semgrep", "socket"]
+
+[[repositories]]
+name = "google/oss-fuzz"
+base_branch = "master"
+authors = ["0ai-Cyberviser"]
+labels = ["copilot"]
+monitored_checks = ["cla/google", "header-check", "trial-build", "build", "infra tests", "presubmit", "pr (address)"]

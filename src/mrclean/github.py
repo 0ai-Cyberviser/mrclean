@@ -49,25 +49,57 @@ class GitHubCli:
     def __init__(self, runner: callable | None = None) -> None:
         self._runner = runner or _run_gh_json
 
-    def list_open_pull_requests(self, repository: str) -> tuple[PullRequestSnapshot, ...]:
-        raw_prs = self._runner(
-            [
-                "gh",
-                "search",
-                "prs",
-                "--repo",
-                repository,
-                "--state",
-                "open",
-                "--json",
-                "number,title,updatedAt,url",
-            ]
-        )
-        rows = json.loads(raw_prs)
+    def list_open_pull_requests(
+        self,
+        repository: str,
+        *,
+        authors: tuple[str, ...] = (),
+    ) -> tuple[PullRequestSnapshot, ...]:
+        selected_authors = tuple(author for author in authors if author)
+        if not selected_authors:
+            rows = self._search_pull_requests(repository)
+        else:
+            deduped: dict[int, dict[str, object]] = {}
+            for author in selected_authors:
+                for row in self._search_pull_requests(repository, author=author):
+                    deduped[int(row["number"])] = row
+            rows = tuple(
+                sorted(
+                    deduped.values(),
+                    key=lambda item: (
+                        str(item.get("updatedAt", "")),
+                        int(item.get("number", 0)),
+                    ),
+                    reverse=True,
+                )
+            )
+
         snapshots: list[PullRequestSnapshot] = []
         for row in rows:
             snapshots.append(self.get_pull_request(repository, int(row["number"])))
         return tuple(snapshots)
+
+    def _search_pull_requests(
+        self,
+        repository: str,
+        *,
+        author: str | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        argv = [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repository,
+            "--state",
+            "open",
+        ]
+        if author:
+            argv.extend(["--author", author])
+        argv.extend(["--json", "number,title,updatedAt,url"])
+        raw_prs = self._runner(argv)
+        rows = json.loads(raw_prs)
+        return tuple(rows)
 
     def get_pull_request(self, repository: str, number: int) -> PullRequestSnapshot:
         raw = self._runner(

@@ -30,6 +30,7 @@ class PolicyConfig:
 class RepositoryConfig:
     name: str
     base_branch: str = "main"
+    authors: tuple[str, ...] = ()
     local_path: str | None = None
     labels: tuple[str, ...] = ()
     monitored_checks: tuple[str, ...] = ()
@@ -133,6 +134,7 @@ protected_branches = ["main", "master"]
 [[repositories]]
 name = "0ai-Cyberviser/Hancock"
 base_branch = "main"
+authors = ["0ai-Cyberviser"]
 local_path = "/home/oai/Hancock"
 labels = ["codex"]
 monitored_checks = ["build-linux", "oss-fuzz", "cifuzz", "fuzzing"]
@@ -140,9 +142,25 @@ monitored_checks = ["build-linux", "oss-fuzz", "cifuzz", "fuzzing"]
 [[repositories]]
 name = "0ai-Cyberviser/CyberViser-ViserHub"
 base_branch = "main"
+authors = ["0ai-Cyberviser", "app/copilot-swe-agent"]
 local_path = "/home/oai/pr-audits/CyberViser-ViserHub"
 labels = ["copilot"]
 monitored_checks = ["fuzz-pr", "build-linux"]
+
+[[repositories]]
+name = "xai-org/grok-1"
+base_branch = "main"
+authors = ["0ai-Cyberviser"]
+local_path = "/home/oai/pr-audits/grok-1"
+labels = ["codex"]
+monitored_checks = ["semgrep", "socket"]
+
+[[repositories]]
+name = "google/oss-fuzz"
+base_branch = "master"
+authors = ["0ai-Cyberviser"]
+labels = ["copilot"]
+monitored_checks = ["cla/google", "header-check", "trial-build", "build", "infra tests", "presubmit", "pr (address)"]
 """
 
 
@@ -156,10 +174,26 @@ def _require_string(section: dict[str, object], key: str) -> str:
 def _parse_repository(raw: dict[str, object]) -> RepositoryConfig:
     labels = tuple(raw.get("labels", ()))
     monitored_checks = tuple(raw.get("monitored_checks", ()))
+    authors = _parse_authors(raw)
     return RepositoryConfig(
         name=_require_string(raw, "name"),
         base_branch=str(raw.get("base_branch", "main")),
+        authors=authors,
         local_path=str(raw["local_path"]) if "local_path" in raw else None,
         labels=labels,
         monitored_checks=monitored_checks,
     )
+
+
+def _parse_authors(raw: dict[str, object]) -> tuple[str, ...]:
+    if "authors" in raw:
+        value = raw["authors"]
+        if not isinstance(value, list):
+            raise ValueError("repository.authors must be a list of strings")
+        authors = tuple(str(item).strip() for item in value if str(item).strip())
+        if not authors:
+            raise ValueError("repository.authors must contain at least one non-empty value")
+        return authors
+    if "author" in raw:
+        return (_require_string(raw, "author"),)
+    return ()

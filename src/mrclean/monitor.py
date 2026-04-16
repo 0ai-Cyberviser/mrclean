@@ -53,7 +53,10 @@ class RepositoryScanner:
         )
         results: list[ScanResult] = []
         for repository in selected:
-            snapshots = self.github.list_open_pull_requests(repository.name)
+            snapshots = self.github.list_open_pull_requests(
+                repository.name,
+                authors=repository.authors,
+            )
             repository_results: list[ScanResult] = []
             for snapshot in snapshots:
                 result = self._scan_pull_request(repository, snapshot, include_healthy)
