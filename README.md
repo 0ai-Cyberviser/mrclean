@@ -213,4 +213,9 @@ changes policy intentionally.
 
 ## License
 
-MrClean is released under the MIT License. See [LICENSE](/home/oai/mrclean/LICENSE).
+MrClean is distributed under the [MIT License](LICENSE). See [OWNERSHIP.md](OWNERSHIP.md) for repository-control and maintainer details.
+
+- Repository administration and release approval: Johnny Watters (`0ai-Cyberviser`)
+- Current and prior published releases remain under MIT
+- Maintainers may require additional rights confirmation before merging a contribution
+- Project contacts: `0ai@cyberviserai.com` · `cyberviser@proton.me`
