@@ -52,6 +52,16 @@ Secondary contact: `cyberviser@proton.me`
 ```bash
 cd /home/oai/mrclean
 PYTHONPATH=src python -m mrclean validate mrclean.toml.example
+
+# Generate shell completion (Kali Linux compatible)
+PYTHONPATH=src python -m mrclean completion bash > /etc/bash_completion.d/mrclean
+# or for zsh
+PYTHONPATH=src python -m mrclean completion zsh > ~/.zsh/completion/_mrclean
+
+# Use colored output (auto-enabled on Kali terminals)
+PYTHONPATH=src python -m mrclean --kali-mode scan mrclean.toml.example --repo 0ai-Cyberviser/Hancock
+
+# Original commands still work
 PYTHONPATH=src python -m mrclean plan mrclean.toml.example \
   --repo 0ai-Cyberviser/Hancock \
   --goal "stabilize failing CI and keep patches narrow" \
@@ -86,6 +96,71 @@ PYTHONPATH=src python -m mrclean apply my-write-enabled.toml \
 
 `scan` requires GitHub CLI authentication via `gh auth login` or an existing
 authenticated `gh` session.
+
+## AI Model Providers
+
+MrClean supports multiple AI model providers for generating cleanup plans and edit proposals:
+
+### OpenAI (GPT models)
+```toml
+[model]
+provider = "openai"
+name = "gpt-4"
+```
+Set `OPENAI_API_KEY` environment variable. Optionally set `OPENAI_BASE_URL` for custom endpoints.
+
+### Anthropic Claude
+```toml
+[model]
+provider = "anthropic"  # or "claude"
+name = "claude-3-5-sonnet-20241022"
+```
+Set `ANTHROPIC_API_KEY` environment variable.
+
+### Google Gemini
+```toml
+[model]
+provider = "gemini"  # or "google" or "google_gemini"
+name = "gemini-1.5-pro"
+```
+Set `GOOGLE_API_KEY` or `GEMINI_API_KEY` environment variable.
+
+### GitHub Copilot
+```toml
+[model]
+provider = "copilot"  # or "github_copilot"
+name = "gpt-4"
+```
+Set `GITHUB_COPILOT_API_KEY` or `COPILOT_API_KEY` environment variable. Optionally set `GITHUB_COPILOT_BASE_URL` for custom endpoints.
+
+### Stub Provider (Default)
+```toml
+[model]
+provider = "stub"
+name = "deterministic-stub"
+```
+No API key required. Returns deterministic placeholder responses for testing without external dependencies.
+
+## Kali Linux Terminal Features
+
+MrClean includes optimizations for Kali Linux terminals:
+
+- **Auto-detected color support**: Automatically enables ANSI colors when running in compatible terminals
+- **Kali-themed output**: Uses Kali's signature blue and dragon orange colors
+- **Shell completion**: Bash and Zsh completion scripts with auto-complete for commands and options
+- **UTF-8 symbols**: Success (✓), error (✗), warning (⚠), and info (ℹ) symbols for better readability
+- **--no-color flag**: Disable colors for piping or scripting
+- **--kali-mode flag**: Force Kali-optimized styling
+
+Install shell completion:
+```bash
+# Bash (Kali default)
+mrclean completion bash | sudo tee /etc/bash_completion.d/mrclean
+source ~/.bashrc
+
+# Zsh
+mrclean completion zsh > ~/.zsh/completion/_mrclean
+```
 
 Set `authors = ["your-github-login"]` in a `[[repositories]]` block when you
 want MrClean to monitor only specific PR authors in an upstream repo. This
