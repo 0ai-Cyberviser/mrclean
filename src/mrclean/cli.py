@@ -27,6 +27,7 @@ from .previews import (
 )
 from .proposals import Proposal, ProposalGenerator
 from .runner import ActionExecution, LocalRunner, RunSession
+from .terminal import TerminalFormatter, generate_bash_completion, generate_zsh_completion
 from .watch import RepositoryWatcher, WatchEvent
 
 
@@ -42,6 +43,8 @@ class _AssessedQueue:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mrclean", description="MrClean automation agent scaffold")
+    parser.add_argument("--no-color", action="store_true", help="disable colored output")
+    parser.add_argument("--kali-mode", action="store_true", help="enable Kali Linux optimized output")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init", help="write a sample MrClean config")
@@ -50,6 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_parser = subparsers.add_parser("validate", help="validate a config file")
     validate_parser.add_argument("config", help="path to mrclean TOML config")
+
+    # Shell completion commands
+    completion_parser = subparsers.add_parser("completion", help="generate shell completion scripts")
+    completion_parser.add_argument("shell", choices=["bash", "zsh"], help="shell type")
 
     plan_parser = subparsers.add_parser("plan", help="build a cleanup plan")
     plan_parser.add_argument("config", help="path to mrclean TOML config")
@@ -269,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_init(Path(args.path), args.force)
     if args.command == "validate":
         return _run_validate(Path(args.config))
+    if args.command == "completion":
+        return _run_completion(args.shell)
     if args.command == "plan":
         return _run_plan(args)
     if args.command == "scan":
@@ -307,13 +316,30 @@ def _run_init(path: Path, force: bool) -> int:
     return 0
 
 
-def _run_validate(path: Path) -> int:
-    config = MrCleanConfig.from_toml(path)
-    print(
-        f"config valid: name={config.name}, repos={len(config.repositories)}, "
-        f"dry_run={config.policy.dry_run}, model={config.model.name}"
-    )
+def _run_completion(shell: str) -> int:
+    """Generate shell completion script."""
+    if shell == "bash":
+        print(generate_bash_completion())
+    elif shell == "zsh":
+        print(generate_zsh_completion())
+    else:
+        print(f"unsupported shell: {shell}", file=sys.stderr)
+        return 1
     return 0
+
+
+def _run_validate(path: Path) -> int:
+    formatter = TerminalFormatter()
+    try:
+        config = MrCleanConfig.from_toml(path)
+        formatter.print_success(
+            f"Config valid: name={config.name}, repos={len(config.repositories)}, "
+            f"dry_run={config.policy.dry_run}, model={config.model.name}"
+        )
+        return 0
+    except Exception as exc:
+        formatter.print_error(f"Config validation failed: {exc}")
+        return 1
 
 
 def _run_plan(args: argparse.Namespace) -> int:

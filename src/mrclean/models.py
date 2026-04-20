@@ -123,6 +123,105 @@ class OpenAIChatModelClient:
         )
 
 
+class AnthropicModelClient:
+    def __init__(self, api_key: str) -> None:
+        try:
+            from anthropic import Anthropic
+        except ImportError as exc:
+            raise ImportError("anthropic package required for Claude integration: pip install anthropic") from exc
+        self.client = Anthropic(api_key=api_key)
+
+    def complete(self, request: CompletionRequest) -> CompletionResponse:
+        # Convert messages to Anthropic format
+        system_message = ""
+        messages_list = []
+        for msg in request.messages:
+            if msg.role == "system":
+                system_message = msg.content
+            else:
+                messages_list.append({"role": msg.role, "content": msg.content})
+
+        response = self.client.messages.create(
+            model=request.model,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            system=system_message if system_message else None,
+            messages=messages_list,
+        )
+        content = response.content[0].text if response.content else ""
+        return CompletionResponse(
+            content=content,
+            raw={
+                "provider": "anthropic",
+                "model": response.model,
+                "id": response.id,
+            },
+        )
+
+
+class GoogleGeminiModelClient:
+    def __init__(self, api_key: str) -> None:
+        try:
+            import google.generativeai as genai
+        except ImportError as exc:
+            raise ImportError("google-generativeai package required for Gemini: pip install google-generativeai") from exc
+        genai.configure(api_key=api_key)
+        self.genai = genai
+
+    def complete(self, request: CompletionRequest) -> CompletionResponse:
+        # Gemini combines system and user messages
+        model = self.genai.GenerativeModel(request.model)
+        prompt_parts = []
+        for msg in request.messages:
+            if msg.role == "system":
+                prompt_parts.append(f"System: {msg.content}")
+            elif msg.role == "user":
+                prompt_parts.append(f"User: {msg.content}")
+            elif msg.role == "assistant":
+                prompt_parts.append(f"Assistant: {msg.content}")
+
+        combined_prompt = "\n\n".join(prompt_parts)
+        response = model.generate_content(
+            combined_prompt,
+            generation_config={
+                "temperature": request.temperature,
+                "max_output_tokens": request.max_tokens,
+            },
+        )
+        content = response.text if hasattr(response, "text") else ""
+        return CompletionResponse(
+            content=content,
+            raw={
+                "provider": "google_gemini",
+                "model": request.model,
+            },
+        )
+
+
+class GitHubCopilotModelClient:
+    def __init__(self, api_key: str, base_url: str = "https://api.githubcopilot.com") -> None:
+        from openai import OpenAI
+        # GitHub Copilot uses OpenAI-compatible API
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+
+    def complete(self, request: CompletionRequest) -> CompletionResponse:
+        response = self.client.chat.completions.create(
+            model=request.model,
+            messages=[{"role": message.role, "content": message.content} for message in request.messages],
+            temperature=request.temperature,
+            max_completion_tokens=request.max_tokens,
+        )
+        message = response.choices[0].message
+        return CompletionResponse(
+            content=message.content or "",
+            raw={
+                "provider": "github_copilot",
+                "model": getattr(response, "model", request.model),
+                "id": getattr(response, "id", ""),
+            },
+        )
+
+
 def build_model_client(provider: str, model_name: str, env: dict[str, str] | None = None) -> ModelClient:
     environment = env or os.environ
     normalized = provider.strip().lower()
@@ -132,6 +231,22 @@ def build_model_client(provider: str, model_name: str, env: dict[str, str] | Non
             return StubModelClient(provider_hint="openai", reason="OPENAI_API_KEY is not configured")
         base_url = environment.get("OPENAI_BASE_URL", "")
         return OpenAIChatModelClient(api_key=api_key, base_url=base_url)
+    if normalized in {"anthropic", "claude"}:
+        api_key = environment.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return StubModelClient(provider_hint="anthropic", reason="ANTHROPIC_API_KEY is not configured")
+        return AnthropicModelClient(api_key=api_key)
+    if normalized in {"google", "gemini", "google_gemini"}:
+        api_key = environment.get("GOOGLE_API_KEY", "") or environment.get("GEMINI_API_KEY", "")
+        if not api_key:
+            return StubModelClient(provider_hint="google_gemini", reason="GOOGLE_API_KEY or GEMINI_API_KEY is not configured")
+        return GoogleGeminiModelClient(api_key=api_key)
+    if normalized in {"github_copilot", "copilot"}:
+        api_key = environment.get("GITHUB_COPILOT_API_KEY", "") or environment.get("COPILOT_API_KEY", "")
+        if not api_key:
+            return StubModelClient(provider_hint="github_copilot", reason="GITHUB_COPILOT_API_KEY or COPILOT_API_KEY is not configured")
+        base_url = environment.get("GITHUB_COPILOT_BASE_URL", "https://api.githubcopilot.com")
+        return GitHubCopilotModelClient(api_key=api_key, base_url=base_url)
     if normalized in {"stub", ""}:
         return StubModelClient(provider_hint=normalized or "stub")
     return StubModelClient(provider_hint=provider, reason=f"unsupported provider {provider!r} for model {model_name}")
