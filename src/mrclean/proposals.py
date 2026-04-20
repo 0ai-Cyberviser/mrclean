@@ -27,12 +27,15 @@ class ProposalGenerator:
         self.config = config
         self.model_client = model_client or build_model_client(config.model.provider, config.model.name)
 
-    def generate(self, candidate: DispatchCandidate, session: RunSession) -> Proposal:
+    def generate(self, candidate: DispatchCandidate, session: RunSession, task_type: str = "proposal") -> Proposal:
+        # Select the appropriate model for proposal generation
+        model_config = self.config.get_model_for_task(task_type)
+
         response = self.model_client.complete(
             CompletionRequest(
-                model=self.config.model.name,
-                temperature=self.config.model.temperature,
-                max_tokens=self.config.model.max_tokens,
+                model=model_config.name,
+                temperature=model_config.temperature,
+                max_tokens=model_config.max_tokens,
                 messages=(
                     ChatMessage(role="system", content=MR_CLEAN_PROPOSAL_PROMPT),
                     ChatMessage(role="user", content=_render_proposal_context(candidate, session)),
@@ -40,7 +43,7 @@ class ProposalGenerator:
             )
         )
         provider = str(response.raw.get("provider", "stub"))
-        model_name = str(response.raw.get("model", self.config.model.name))
+        model_name = str(response.raw.get("model", model_config.name))
         return Proposal(
             repository=candidate.repository,
             number=candidate.number,

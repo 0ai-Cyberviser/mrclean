@@ -56,6 +56,13 @@ class CandidateAssessor:
         runtime_score = 0
         confidence = 100
 
+        # Check for potential zero-day indicators
+        zero_day_indicators = self._check_zero_day_indicators(item)
+        if zero_day_indicators:
+            findings.extend(zero_day_indicators)
+            runtime_score += 3
+            confidence -= 30
+
         if item.pending_checks:
             findings.append(
                 AssessmentFinding(
@@ -200,6 +207,51 @@ class CandidateAssessor:
             recommended_action=_recommended_action(item, dispatch_status, false_positive_risk, runtime_risk),
             findings=tuple(findings),
         )
+
+    def _check_zero_day_indicators(self, item: ScanResult) -> list[AssessmentFinding]:
+        """Detect potential zero-day vulnerabilities based on check patterns and signals."""
+        indicators: list[AssessmentFinding] = []
+
+        # Security-focused checks that might indicate zero-day issues
+        security_checks = {"semgrep", "socket", "codeql", "snyk", "dependabot", "security", "vulnerability"}
+        fuzzing_checks = {"oss-fuzz", "cifuzz", "fuzzing", "fuzz-pr", "libfuzzer", "afl"}
+
+        # Check for new security check failures
+        failing_security = [c for c in item.failing_checks if any(sec in c.lower() for sec in security_checks)]
+        if failing_security:
+            indicators.append(
+                AssessmentFinding(
+                    code="security_check_failure",
+                    severity="critical",
+                    summary="Security-focused checks are failing, potential vulnerability detected.",
+                    evidence=", ".join(failing_security),
+                )
+            )
+
+        # Check for fuzzing failures which often reveal zero-days
+        failing_fuzzing = [c for c in item.failing_checks if any(fuzz in c.lower() for fuzz in fuzzing_checks)]
+        if failing_fuzzing:
+            indicators.append(
+                AssessmentFinding(
+                    code="fuzzing_failure",
+                    severity="critical",
+                    summary="Fuzzing checks failing, possible memory corruption or crash detected.",
+                    evidence=", ".join(failing_fuzzing),
+                )
+            )
+
+        # Check for unexpected combination of failing checks
+        if len(item.failing_checks) >= 3 and any(any(sec in c.lower() for sec in security_checks) for c in item.failing_checks):
+            indicators.append(
+                AssessmentFinding(
+                    code="multi_security_failure",
+                    severity="high",
+                    summary="Multiple checks failing including security checks may indicate complex vulnerability.",
+                    evidence=f"{len(item.failing_checks)} checks failing",
+                )
+            )
+
+        return indicators
 
 
 def _risk_label(score: int) -> str:

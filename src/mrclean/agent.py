@@ -33,12 +33,15 @@ class MrCleanAgent:
         self.model_client = model_client or StubModelClient()
         self.policy = PolicyEngine(config.policy)
 
-    def draft_plan(self, signal: CleanupSignal) -> AgentPlan:
+    def draft_plan(self, signal: CleanupSignal, task_type: str = "planning") -> AgentPlan:
+        # Select the appropriate model for this task
+        model_config = self.config.get_model_for_task(task_type)
+
         model_summary = self.model_client.complete(
             CompletionRequest(
-                model=self.config.model.name,
-                temperature=self.config.model.temperature,
-                max_tokens=self.config.model.max_tokens,
+                model=model_config.name,
+                temperature=model_config.temperature,
+                max_tokens=model_config.max_tokens,
                 messages=(
                     ChatMessage(role="system", content=MR_CLEAN_SYSTEM_PROMPT),
                     ChatMessage(

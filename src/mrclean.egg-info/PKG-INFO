@@ -1,3 +1,36 @@
+Metadata-Version: 2.4
+Name: mrclean
+Version: 0.1.0
+Summary: Policy-first agent scaffold for automated PR and repository cleanup.
+Author-email: Johnny Watters <0ai@cyberviserai.com>
+Maintainer-email: 0ai-Cyberviser <cyberviser@proton.me>
+License: MIT License
+        
+        Copyright (c) 2026 Johnny Watters
+        
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+        
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+        
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
 # MrClean
 
 MrClean is a policy-first automation agent scaffold for repository cleanup work.
@@ -24,13 +57,6 @@ Secondary contact: `cyberviser@proton.me`
   monitored checks, so the operator can close stale work intentionally
 - Reads configured local checkouts to attach real changed-file context and
   branch-mismatch warnings to scan results
-- **Zero-Day Detection**: Automatically identifies potential security vulnerabilities
-  by detecting failures in security checks (semgrep, codeql, snyk) and fuzzing
-  tools (oss-fuzz, cifuzz), flagging them as critical findings
-- **Multi-Model Routing**: Intelligently routes different tasks to appropriate AI
-  models based on task type and priority, optimizing for both cost and quality
-
-For detailed information on these enhancements, see [ENHANCEMENTS.md](ENHANCEMENTS.md).
 
 ## Project layout
 
@@ -59,16 +85,6 @@ For detailed information on these enhancements, see [ENHANCEMENTS.md](ENHANCEMEN
 ```bash
 cd /home/oai/mrclean
 PYTHONPATH=src python -m mrclean validate mrclean.toml.example
-
-# Generate shell completion (Kali Linux compatible)
-PYTHONPATH=src python -m mrclean completion bash > /etc/bash_completion.d/mrclean
-# or for zsh
-PYTHONPATH=src python -m mrclean completion zsh > ~/.zsh/completion/_mrclean
-
-# Use colored output (auto-enabled on Kali terminals)
-PYTHONPATH=src python -m mrclean --kali-mode scan mrclean.toml.example --repo 0ai-Cyberviser/Hancock
-
-# Original commands still work
 PYTHONPATH=src python -m mrclean plan mrclean.toml.example \
   --repo 0ai-Cyberviser/Hancock \
   --goal "stabilize failing CI and keep patches narrow" \
@@ -103,71 +119,6 @@ PYTHONPATH=src python -m mrclean apply my-write-enabled.toml \
 
 `scan` requires GitHub CLI authentication via `gh auth login` or an existing
 authenticated `gh` session.
-
-## AI Model Providers
-
-MrClean supports multiple AI model providers for generating cleanup plans and edit proposals:
-
-### OpenAI (GPT models)
-```toml
-[model]
-provider = "openai"
-name = "gpt-4"
-```
-Set `OPENAI_API_KEY` environment variable. Optionally set `OPENAI_BASE_URL` for custom endpoints.
-
-### Anthropic Claude
-```toml
-[model]
-provider = "anthropic"  # or "claude"
-name = "claude-3-5-sonnet-20241022"
-```
-Set `ANTHROPIC_API_KEY` environment variable.
-
-### Google Gemini
-```toml
-[model]
-provider = "gemini"  # or "google" or "google_gemini"
-name = "gemini-1.5-pro"
-```
-Set `GOOGLE_API_KEY` or `GEMINI_API_KEY` environment variable.
-
-### GitHub Copilot
-```toml
-[model]
-provider = "copilot"  # or "github_copilot"
-name = "gpt-4"
-```
-Set `GITHUB_COPILOT_API_KEY` or `COPILOT_API_KEY` environment variable. Optionally set `GITHUB_COPILOT_BASE_URL` for custom endpoints.
-
-### Stub Provider (Default)
-```toml
-[model]
-provider = "stub"
-name = "deterministic-stub"
-```
-No API key required. Returns deterministic placeholder responses for testing without external dependencies.
-
-## Kali Linux Terminal Features
-
-MrClean includes optimizations for Kali Linux terminals:
-
-- **Auto-detected color support**: Automatically enables ANSI colors when running in compatible terminals
-- **Kali-themed output**: Uses Kali's signature blue and dragon orange colors
-- **Shell completion**: Bash and Zsh completion scripts with auto-complete for commands and options
-- **UTF-8 symbols**: Success (✓), error (✗), warning (⚠), and info (ℹ) symbols for better readability
-- **--no-color flag**: Disable colors for piping or scripting
-- **--kali-mode flag**: Force Kali-optimized styling
-
-Install shell completion:
-```bash
-# Bash (Kali default)
-mrclean completion bash | sudo tee /etc/bash_completion.d/mrclean
-source ~/.bashrc
-
-# Zsh
-mrclean completion zsh > ~/.zsh/completion/_mrclean
-```
 
 Set `authors = ["your-github-login"]` in a `[[repositories]]` block when you
 want MrClean to monitor only specific PR authors in an upstream repo. This
