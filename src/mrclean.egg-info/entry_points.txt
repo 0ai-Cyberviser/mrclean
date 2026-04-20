@@ -1,0 +1,2 @@
+[console_scripts]
+mrclean = mrclean.cli:main

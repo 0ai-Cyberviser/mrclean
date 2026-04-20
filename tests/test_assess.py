@@ -114,6 +114,63 @@ class CandidateAssessorTests(unittest.TestCase):
         self.assertGreater(gated.priority, candidate.priority)
         self.assertFalse(gated.actions[0].allowed)
 
+    def test_assess_detects_security_check_failures_as_zero_day_indicators(self) -> None:
+        result = ScanResult(
+            repository="example/repo",
+            number=42,
+            title="Security fix",
+            url="https://github.com/example/repo/pull/42",
+            branch="security-patch",
+            updated_at="2026-04-15T18:00:00Z",
+            merge_state_status="CLEAN",
+            category="needs_attention",
+            failing_checks=("semgrep", "codeql", "build"),
+            pending_checks=(),
+            changed_files=("auth.py",),
+            workspace_path="/repo",
+            workspace_branch="security-patch",
+            workspace_notes=(),
+        )
+
+        report = CandidateAssessor(now=datetime(2026, 4, 15, 18, 30, tzinfo=timezone.utc)).assess(
+            (result,),
+            (_candidate(),),
+        )[0]
+
+        # Should detect security check failures
+        security_findings = [f for f in report.findings if f.code in ("security_check_failure", "multi_security_failure")]
+        self.assertGreater(len(security_findings), 0)
+        self.assertIn("critical", [f.severity for f in security_findings])
+
+    def test_assess_detects_fuzzing_failures_as_zero_day_indicators(self) -> None:
+        result = ScanResult(
+            repository="example/repo",
+            number=43,
+            title="Fuzzing crash fix",
+            url="https://github.com/example/repo/pull/43",
+            branch="fix-crash",
+            updated_at="2026-04-15T18:00:00Z",
+            merge_state_status="CLEAN",
+            category="needs_attention",
+            failing_checks=("oss-fuzz", "cifuzz"),
+            pending_checks=(),
+            changed_files=("parser.c",),
+            workspace_path="/repo",
+            workspace_branch="fix-crash",
+            workspace_notes=(),
+        )
+
+        report = CandidateAssessor(now=datetime(2026, 4, 15, 18, 30, tzinfo=timezone.utc)).assess(
+            (result,),
+            (_candidate(),),
+        )[0]
+
+        # Should detect fuzzing failures
+        fuzzing_findings = [f for f in report.findings if f.code == "fuzzing_failure"]
+        self.assertEqual(len(fuzzing_findings), 1)
+        self.assertEqual(fuzzing_findings[0].severity, "critical")
+        self.assertIn("memory corruption", fuzzing_findings[0].summary.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

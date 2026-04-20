@@ -11,6 +11,8 @@ class ModelConfig:
     name: str
     temperature: float = 0.1
     max_tokens: int = 4096
+    task_types: tuple[str, ...] = ()
+    priority: int = 0
 
 
 @dataclass(slots=True)
@@ -42,6 +44,7 @@ class MrCleanConfig:
     model: ModelConfig
     policy: PolicyConfig
     repositories: tuple[RepositoryConfig, ...]
+    models: tuple[ModelConfig, ...] = ()
 
     @classmethod
     def from_toml(cls, path: str | Path) -> "MrCleanConfig":
@@ -60,12 +63,15 @@ class MrCleanConfig:
         model_section = raw.get("model", {})
         policy_section = raw.get("policy", {})
         repository_sections = raw.get("repositories", [])
+        models_sections = raw.get("models", [])
 
         model = ModelConfig(
             provider=_require_string(model_section, "provider"),
             name=_require_string(model_section, "name"),
             temperature=float(model_section.get("temperature", 0.1)),
             max_tokens=int(model_section.get("max_tokens", 4096)),
+            task_types=tuple(model_section.get("task_types", ())),
+            priority=int(model_section.get("priority", 0)),
         )
 
         policy = PolicyConfig(
@@ -97,11 +103,14 @@ class MrCleanConfig:
         if not repositories:
             raise ValueError("at least one [[repositories]] entry is required")
 
+        models = tuple(_parse_model(item) for item in models_sections)
+
         return cls(
             name=str(raw.get("name", "mrclean")),
             model=model,
             policy=policy,
             repositories=repositories,
+            models=models,
         )
 
     def get_repository(self, name: str) -> RepositoryConfig:
@@ -109,6 +118,13 @@ class MrCleanConfig:
             if repository.name == name:
                 return repository
         raise KeyError(f"repository not found: {name}")
+
+    def get_model_for_task(self, task_type: str) -> ModelConfig:
+        """Select the best model for a given task type based on task_types and priority."""
+        matching_models = [m for m in self.models if task_type in m.task_types]
+        if matching_models:
+            return max(matching_models, key=lambda m: m.priority)
+        return self.model
 
 
 def sample_config() -> str:
@@ -119,6 +135,25 @@ provider = "openai"
 name = "gpt-5.4-mini"
 temperature = 0.1
 max_tokens = 4096
+
+# Optional: Configure multiple models for specific tasks
+# Models with task_types will be selected for matching tasks
+# Higher priority models are preferred when multiple match
+[[models]]
+provider = "openai"
+name = "gpt-5.4-turbo"
+temperature = 0.2
+max_tokens = 8192
+task_types = ["security", "vulnerability", "zero-day"]
+priority = 100
+
+[[models]]
+provider = "openai"
+name = "gpt-5.4-mini"
+temperature = 0.1
+max_tokens = 4096
+task_types = ["planning", "proposal", "review"]
+priority = 50
 
 [policy]
 dry_run = true
@@ -197,3 +232,15 @@ def _parse_authors(raw: dict[str, object]) -> tuple[str, ...]:
     if "author" in raw:
         return (_require_string(raw, "author"),)
     return ()
+
+
+def _parse_model(raw: dict[str, object]) -> ModelConfig:
+    task_types = tuple(raw.get("task_types", ()))
+    return ModelConfig(
+        provider=_require_string(raw, "provider"),
+        name=_require_string(raw, "name"),
+        temperature=float(raw.get("temperature", 0.1)),
+        max_tokens=int(raw.get("max_tokens", 4096)),
+        task_types=task_types,
+        priority=int(raw.get("priority", 0)),
+    )

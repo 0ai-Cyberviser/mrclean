@@ -6,6 +6,25 @@ name = "gpt-5.4-mini"
 temperature = 0.1
 max_tokens = 4096
 
+# Optional: Configure multiple models for specific tasks
+# Models with task_types will be selected for matching tasks
+# Higher priority models are preferred when multiple match
+[[models]]
+provider = "openai"
+name = "gpt-5.4-turbo"
+temperature = 0.2
+max_tokens = 8192
+task_types = ["security", "vulnerability", "zero-day"]
+priority = 100
+
+[[models]]
+provider = "openai"
+name = "gpt-5.4-mini"
+temperature = 0.1
+max_tokens = 4096
+task_types = ["planning", "proposal", "review"]
+priority = 50
+
 [policy]
 dry_run = true
 allow_local_apply = false
