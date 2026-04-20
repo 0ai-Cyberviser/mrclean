@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from mrclean.cli import main
 from mrclean.monitor import ScanResult
@@ -1421,5 +1421,238 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result, 0)
 
 
+def _minimal_scan_config() -> str:
+    return """name = "mrclean"
+
+[model]
+provider = "openai"
+name = "gpt-5.4-mini"
+
+[policy]
+dry_run = true
+allow_local_apply = false
+allow_push = false
+allow_close_stale_prs = false
+allow_force_push = false
+require_signed_preview_artifacts = true
+artifact_signing_key_env = "MRCLEAN_ARTIFACT_SIGNING_KEY"
+max_patch_files = 5
+protected_branches = ["main", "master"]
+
+[[repositories]]
+name = "example/repo"
+base_branch = "main"
+monitored_checks = ["build-linux"]
+"""
+
+
+class ScanIntegrationTests(unittest.TestCase):
+    """Integration tests for the scan command exercising the full
+    CLI → RepositoryScanner → GitHubCli stack with subprocess mocked
+    at the lowest level (mrclean.github.subprocess.run)."""
+
+    def _make_subprocess_run(
+        self,
+        responses: dict[tuple[str, ...], str],
+        *,
+        fail_keys: tuple[tuple[str, ...], ...] = (),
+        auth_error: bool = False,
+    ):
+        """Return a mock for subprocess.run that serves canned gh responses."""
+
+        def _mock_run(argv, *, check, capture_output, text):
+            key = tuple(argv)
+            if auth_error or key in fail_keys:
+                err = subprocess.CalledProcessError(1, argv)
+                err.stderr = "You are not logged into any GitHub hosts. Run gh auth login to authenticate."
+                raise err
+            if key in responses:
+                result = MagicMock()
+                result.stdout = responses[key]
+                return result
+            result = MagicMock()
+            result.stdout = "[]"
+            return result
+
+        return _mock_run
+
+    def test_scan_command_renders_pr_summary_through_full_github_stack(self) -> None:
+        """Full integration path: CLI → RepositoryScanner → GitHubCli.
+
+        Subprocess is mocked at the mrclean.github level so the real
+        GitHubCli and RepositoryScanner code paths execute without
+        a live GitHub connection.
+        """
+        list_key = (
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "example/repo",
+            "--state",
+            "open",
+            "--json",
+            "number,title,updatedAt,url",
+        )
+        view_key = (
+            "gh",
+            "pr",
+            "view",
+            "7",
+            "--repo",
+            "example/repo",
+            "--json",
+            "headRefName,headRefOid,mergeStateStatus,statusCheckRollup,title,updatedAt,url",
+        )
+        responses = {
+            list_key: json.dumps(
+                [
+                    {
+                        "number": 7,
+                        "title": "Fix build failures",
+                        "updatedAt": "2026-04-19T10:00:00Z",
+                        "url": "https://github.com/example/repo/pull/7",
+                    }
+                ]
+            ),
+            view_key: json.dumps(
+                {
+                    "headRefName": "fix-build",
+                    "headRefOid": "abc123",
+                    "mergeStateStatus": "UNSTABLE",
+                    "title": "Fix build failures",
+                    "updatedAt": "2026-04-19T10:00:00Z",
+                    "url": "https://github.com/example/repo/pull/7",
+                    "statusCheckRollup": [
+                        {
+                            "__typename": "CheckRun",
+                            "name": "build-linux",
+                            "status": "COMPLETED",
+                            "conclusion": "FAILURE",
+                            "workflowName": "CI",
+                        }
+                    ],
+                }
+            ),
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text(_minimal_scan_config(), encoding="utf-8")
+
+            mock_run = self._make_subprocess_run(responses)
+            buffer = StringIO()
+            with patch("mrclean.github.subprocess.run", side_effect=mock_run):
+                with redirect_stdout(buffer):
+                    result = main(["scan", str(config_path), "--repo", "example/repo"])
+
+        self.assertEqual(result, 0)
+        output = buffer.getvalue()
+        self.assertIn("example/repo#7", output)
+        self.assertIn("Fix build failures", output)
+        self.assertIn("needs_attention", output)
+        self.assertIn("build-linux", output)
+
+    def test_scan_command_handles_unauthenticated_gh_cli(self) -> None:
+        """Auth integration path: when gh reports an authentication error,
+        the scan command should exit with code 1 and print a helpful message
+        pointing the operator to 'gh auth login'.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text(_minimal_scan_config(), encoding="utf-8")
+
+            mock_run = self._make_subprocess_run({}, auth_error=True)
+            stderr_buffer = StringIO()
+            with patch("mrclean.github.subprocess.run", side_effect=mock_run):
+                with redirect_stdout(StringIO()), patch("sys.stderr", stderr_buffer):
+                    result = main(["scan", str(config_path), "--repo", "example/repo"])
+
+        self.assertEqual(result, 1)
+        stderr = stderr_buffer.getvalue()
+        self.assertIn("gh auth login", stderr)
+
+    def test_scan_command_emits_json_through_full_github_stack(self) -> None:
+        """Full integration path with --json output.
+
+        Verifies that structured JSON output is produced correctly when
+        the real GitHubCli and RepositoryScanner execute against mocked
+        subprocess responses.
+        """
+        list_key = (
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "example/repo",
+            "--state",
+            "open",
+            "--json",
+            "number,title,updatedAt,url",
+        )
+        view_key = (
+            "gh",
+            "pr",
+            "view",
+            "12",
+            "--repo",
+            "example/repo",
+            "--json",
+            "headRefName,headRefOid,mergeStateStatus,statusCheckRollup,title,updatedAt,url",
+        )
+        responses = {
+            list_key: json.dumps(
+                [
+                    {
+                        "number": 12,
+                        "title": "Stabilize CI",
+                        "updatedAt": "2026-04-20T08:00:00Z",
+                        "url": "https://github.com/example/repo/pull/12",
+                    }
+                ]
+            ),
+            view_key: json.dumps(
+                {
+                    "headRefName": "stabilize-ci",
+                    "headRefOid": "def456",
+                    "mergeStateStatus": "UNSTABLE",
+                    "title": "Stabilize CI",
+                    "updatedAt": "2026-04-20T08:00:00Z",
+                    "url": "https://github.com/example/repo/pull/12",
+                    "statusCheckRollup": [
+                        {
+                            "__typename": "CheckRun",
+                            "name": "build-linux",
+                            "status": "COMPLETED",
+                            "conclusion": "FAILURE",
+                            "workflowName": "CI",
+                        }
+                    ],
+                }
+            ),
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "mrclean.toml"
+            config_path.write_text(_minimal_scan_config(), encoding="utf-8")
+
+            mock_run = self._make_subprocess_run(responses)
+            buffer = StringIO()
+            with patch("mrclean.github.subprocess.run", side_effect=mock_run):
+                with redirect_stdout(buffer):
+                    result = main(["scan", str(config_path), "--repo", "example/repo", "--json"])
+
+        self.assertEqual(result, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(len(payload), 1)
+        item = payload[0]
+        self.assertEqual(item["repository"], "example/repo")
+        self.assertEqual(item["number"], 12)
+        self.assertEqual(item["title"], "Stabilize CI")
+        self.assertEqual(item["category"], "needs_attention")
+        self.assertIn("build-linux", item["failing_checks"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

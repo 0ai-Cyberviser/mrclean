@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -367,10 +368,14 @@ def _run_plan(args: argparse.Namespace) -> int:
 def _run_scan(args: argparse.Namespace) -> int:
     config = MrCleanConfig.from_toml(Path(args.config))
     scanner = RepositoryScanner(config)
-    results = scanner.scan(
-        repositories=tuple(args.repo),
-        include_healthy=bool(args.include_healthy),
-    )
+    try:
+        results = scanner.scan(
+            repositories=tuple(args.repo),
+            include_healthy=bool(args.include_healthy),
+        )
+    except subprocess.CalledProcessError as exc:
+        _print_gh_auth_error(exc)
+        return 1
 
     if args.json:
         payload = [_scan_item_payload(item) for item in results]
@@ -749,6 +754,12 @@ def _build_preview_batch(args: argparse.Namespace) -> tuple[list[DraftBundle], l
 
     previewer = DraftPreviewer()
     return drafts, [previewer.preview(item) for item in drafts]
+
+
+def _print_gh_auth_error(exc: subprocess.CalledProcessError) -> None:
+    detail = exc.stderr.strip() if exc.stderr else str(exc)
+    print(f"gh command failed: {detail}", file=sys.stderr)
+    print("Run 'gh auth login' to authenticate with GitHub.", file=sys.stderr)
 
 
 def _scan_item_payload(item: ScanResult) -> dict[str, object]:
