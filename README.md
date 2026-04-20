@@ -24,6 +24,13 @@ Secondary contact: `cyberviser@proton.me`
   monitored checks, so the operator can close stale work intentionally
 - Reads configured local checkouts to attach real changed-file context and
   branch-mismatch warnings to scan results
+- **Zero-Day Detection**: Automatically identifies potential security vulnerabilities
+  by detecting failures in security checks (semgrep, codeql, snyk) and fuzzing
+  tools (oss-fuzz, cifuzz), flagging them as critical findings
+- **Multi-Model Routing**: Intelligently routes different tasks to appropriate AI
+  models based on task type and priority, optimizing for both cost and quality
+
+For detailed information on these enhancements, see [ENHANCEMENTS.md](ENHANCEMENTS.md).
 
 ## Project layout
 
