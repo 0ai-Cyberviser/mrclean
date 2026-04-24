@@ -14,7 +14,7 @@ provider = "openai"
 name = "gpt-5.4-turbo"
 temperature = 0.2
 max_tokens = 8192
-task_types = ["security", "vulnerability", "zero-day"]
+task_types = ["security", "vulnerability", "zero-day", "estate-audit"]
 priority = 100
 
 [[models]]
@@ -22,7 +22,7 @@ provider = "openai"
 name = "gpt-5.4-mini"
 temperature = 0.1
 max_tokens = 4096
-task_types = ["planning", "proposal", "review"]
+task_types = ["planning", "proposal", "review", "pr-triage", "label-sync"]
 priority = 50
 
 [policy]
@@ -36,21 +36,92 @@ artifact_signing_key_env = "MRCLEAN_ARTIFACT_SIGNING_KEY"
 max_patch_files = 5
 protected_branches = ["main", "master"]
 
+[estate]
+owner = "0ai-Cyberviser"
+mode = "dry-run"
+report_dir = "reports/mrclean"
+
+[estate.defaults]
+require_security_md = true
+require_license = true
+require_readme = true
+require_codeowners = false
+require_dependabot = true
+require_codeql = true
+require_branch_protection = true
+
+[automation]
+allow_label_sync = true
+allow_issue_comments = true
+allow_pr_comments = true
+allow_open_issues = true
+allow_close_stale_prs = false
+allow_merge = false
+allow_branch_delete = false
+
+[labels]
+baseline = [
+  "type:bug",
+  "type:docs",
+  "type:feature",
+  "type:security",
+  "type:fuzzing",
+  "type:dataset",
+  "type:ci",
+  "risk:low",
+  "risk:medium",
+  "risk:high",
+  "risk:critical",
+  "status:blocked",
+  "status:needs-review",
+  "status:ready",
+  "agent:mrclean",
+  "agent:hancock",
+  "agent:peachfuzz",
+  "agent:peachtree",
+]
+
 [[repositories]]
 name = "0ai-Cyberviser/Hancock"
 base_branch = "main"
+role = "agent-runtime"
 authors = ["0ai-Cyberviser"]
 local_path = "/home/oai/Hancock"
-labels = ["codex"]
-monitored_checks = ["build-linux", "oss-fuzz", "cifuzz", "fuzzing"]
+labels = ["agent:hancock", "type:security", "type:fuzzing"]
+monitored_checks = ["Test", "build-linux", "CodeQL", "semgrep", "oss-fuzz", "cifuzz", "fuzzing"]
 
 [[repositories]]
 name = "0ai-Cyberviser/CyberViser-ViserHub"
 base_branch = "main"
+role = "public-site"
 authors = ["0ai-Cyberviser", "app/copilot-swe-agent"]
 local_path = "/home/oai/pr-audits/CyberViser-ViserHub"
-labels = ["copilot"]
-monitored_checks = ["fuzz-pr", "build-linux"]
+labels = ["agent:mrclean", "type:docs", "type:ci"]
+monitored_checks = ["Deploy CyberViser AI site to GitHub Pages", "fuzz-pr", "build-linux"]
+
+[[repositories]]
+name = "0ai-Cyberviser/PeachTree"
+base_branch = "main"
+role = "dataset-engine"
+authors = ["0ai-Cyberviser"]
+labels = ["agent:peachtree", "type:dataset"]
+monitored_checks = ["Test", "Lint"]
+
+[[repositories]]
+name = "0ai-Cyberviser/peachfuzz"
+base_branch = "main"
+role = "fuzzing-engine"
+authors = ["0ai-Cyberviser"]
+labels = ["agent:peachfuzz", "type:fuzzing"]
+monitored_checks = ["Test", "Fuzz", "Regression"]
+
+[[repositories]]
+name = "0ai-Cyberviser/mrclean"
+base_branch = "main"
+role = "github-estate-maintainer"
+authors = ["0ai-Cyberviser"]
+labels = ["agent:mrclean", "type:ci"]
+monitored_checks = ["Test", "Lint"]
 
 [[repositories]]
 name = "xai-org/grok-1"
