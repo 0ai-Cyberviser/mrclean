@@ -1458,7 +1458,7 @@ def _run_workflow(args: argparse.Namespace) -> int:
             if not args.json:
                 print(formatter.format_info(f"Phase: AUDIT"))
 
-            planner = DispatchPlanner(config)
+            planner = DispatchPlanner(PolicyEngine(config.policy))
             candidates = planner.build(results)
             assessor = CandidateAssessor()
             reports = assessor.assess(results, candidates)
