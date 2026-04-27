@@ -1438,7 +1438,7 @@ def _run_workflow(args: argparse.Namespace) -> int:
             if args.json:
                 print(json.dumps({"phase": "monitor", "iteration": iteration, "results_count": len(results)}))
             else:
-                print(formatter.format_success(f"Found {len(results)} items needing attention"))
+                print(formatter.format_success(f"Found {len(results)} non-healthy items"))
 
             # Log monitoring results
             for result in results:
