@@ -1494,7 +1494,7 @@ def _run_workflow(args: argparse.Namespace) -> int:
 
                 try:
                     # Run safe inspection commands
-                    runner = LocalRunner(config)
+                    runner = LocalRunner()
                     session = runner.run(candidate)
 
                     logger.log_test(
