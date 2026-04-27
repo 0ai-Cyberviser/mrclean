@@ -51,7 +51,9 @@ For detailed information on these enhancements, see [ENHANCEMENTS.md](ENHANCEMEN
 - `src/mrclean/previews.py`: unified diff rendering from guarded draft bundles
 - `src/mrclean/apply.py`: hash-checked local apply transactions with rollback
 - `src/mrclean/agent.py`: MrClean planning agent
-- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `assess`, `run`, `propose`, `intent`, `materialize`, `draft`, `preview`, and `apply` commands
+- `src/mrclean/logger.py`: structured workflow execution logging with persistence
+- `src/mrclean/learning.py`: pattern analysis and historical insights from workflow logs
+- `src/mrclean/cli.py`: `init`, `validate`, `plan`, `scan`, `watch`, `dispatch`, `assess`, `run`, `propose`, `intent`, `materialize`, `draft`, `preview`, `apply`, `workflow`, and `learn` commands
 - `mrclean.toml.example`: starting config
 
 ## Quick start
@@ -103,6 +105,61 @@ PYTHONPATH=src python -m mrclean apply my-write-enabled.toml \
 
 `scan` requires GitHub CLI authentication via `gh auth login` or an existing
 authenticated `gh` session.
+
+## Integrated Workflow: Monitor-Audit-Review-Test-Log-Learn-Repeat
+
+MrClean provides an integrated `workflow` command that harnesses all phases into a continuous improvement cycle:
+
+```bash
+# Run a single workflow cycle
+PYTHONPATH=src python -m mrclean workflow mrclean.toml.example
+
+# Continuous monitoring with 5-minute intervals
+PYTHONPATH=src python -m mrclean workflow mrclean.toml.example \
+  --iterations 0 --interval 300
+
+# Enable learning insights display
+PYTHONPATH=src python -m mrclean workflow mrclean.toml.example \
+  --show-learning
+
+# Auto-apply mode for high-confidence items (requires policy configuration)
+PYTHONPATH=src python -m mrclean workflow mrclean.toml.example \
+  --auto-apply --iterations 0 --interval 600
+```
+
+### Workflow Phases
+
+1. **MONITOR**: Scan configured repositories for failing CI and issues
+2. **AUDIT**: Assess false positive risk, runtime issues, and security concerns
+3. **REVIEW**: Generate proposals for actionable items
+4. **TEST**: Execute safe inspection commands
+5. **LOG**: Persist all workflow execution data to `~/.mrclean/logs/`
+6. **LEARN**: Analyze patterns from historical data
+7. **REPEAT**: Continue monitoring at configured intervals
+
+### Learning Analytics
+
+Analyze historical workflow logs to identify patterns and improve decision-making:
+
+```bash
+# View global learning insights
+PYTHONPATH=src python -m mrclean learn
+
+# Analyze specific repository patterns
+PYTHONPATH=src python -m mrclean learn --repository 0ai-Cyberviser/Hancock
+
+# Export insights as JSON
+PYTHONPATH=src python -m mrclean learn --json > insights.json
+```
+
+Learning analytics include:
+- False positive pattern detection
+- Security vulnerability indicators (zero-day detection patterns)
+- Check reliability scores
+- Common failure patterns
+- Success rates per repository
+
+All workflow data is logged to `~/.mrclean/logs/` in structured JSONL format for analysis and debugging.
 
 ## AI Model Providers
 
