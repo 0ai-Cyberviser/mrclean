@@ -29,6 +29,8 @@ from .proposals import Proposal, ProposalGenerator
 from .runner import ActionExecution, LocalRunner, RunSession
 from .terminal import TerminalFormatter, generate_bash_completion, generate_zsh_completion
 from .watch import RepositoryWatcher, WatchEvent
+from .logger import WorkflowLogger
+from .learning import PatternLearner
 
 
 @dataclass(slots=True)
@@ -265,6 +267,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="actually write changes after all policy and hash checks pass",
     )
 
+    # Integrated workflow harness command
+    workflow_parser = subparsers.add_parser(
+        "workflow",
+        help="run integrated monitor-audit-review-test-log-learn-repeat workflow",
+    )
+    workflow_parser.add_argument("config", help="path to mrclean TOML config")
+    workflow_parser.add_argument("--repo", action="append", default=[], help="limit workflow to configured repos")
+    workflow_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    workflow_parser.add_argument(
+        "--interval",
+        type=float,
+        default=300.0,
+        help="seconds to wait between workflow cycles (default: 300)",
+    )
+    workflow_parser.add_argument(
+        "--iterations",
+        type=int,
+        default=1,
+        help="number of workflow cycles to run; 0 means run until interrupted (default: 1)",
+    )
+    workflow_parser.add_argument(
+        "--auto-apply",
+        action="store_true",
+        help="automatically apply changes for high-confidence actionable items (requires policy allow)",
+    )
+    workflow_parser.add_argument(
+        "--log-dir",
+        type=Path,
+        help="directory for workflow logs (default: ~/.mrclean/logs)",
+    )
+    workflow_parser.add_argument(
+        "--show-learning",
+        action="store_true",
+        help="display learning insights after each cycle",
+    )
+
+    # Learning analytics command
+    learn_parser = subparsers.add_parser(
+        "learn",
+        help="analyze historical workflow logs and display learning insights",
+    )
+    learn_parser.add_argument(
+        "--log-dir",
+        type=Path,
+        help="directory containing workflow logs (default: ~/.mrclean/logs)",
+    )
+    learn_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    learn_parser.add_argument(
+        "--repository",
+        help="analyze patterns for a specific repository",
+    )
+
     return parser
 
 
@@ -302,6 +356,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_preview(args)
     if args.command == "apply":
         return _run_apply(args)
+    if args.command == "workflow":
+        return _run_workflow(args)
+    if args.command == "learn":
+        return _run_learn(args)
 
     parser.error("unknown command")
     return 2
@@ -1349,6 +1407,329 @@ def _print_apply_transaction(item: ApplyTransaction) -> None:
         print("Risks:")
         for risk in item.risks:
             print(f"- {risk}")
+
+
+def _run_workflow(args: argparse.Namespace) -> int:
+    """Run integrated monitor-audit-review-test-log-learn-repeat workflow."""
+    config = MrCleanConfig.from_toml(Path(args.config))
+    logger = WorkflowLogger(log_dir=args.log_dir if args.log_dir else None)
+    learner = PatternLearner(log_dir=args.log_dir if args.log_dir else None)
+
+    formatter = TerminalFormatter(
+        use_color=not args.no_color,
+        kali_mode=args.kali_mode,
+    )
+
+    repos = tuple(args.repo) if args.repo else None
+    iteration = 0
+
+    try:
+        while True:
+            iteration += 1
+
+            if not args.json:
+                print(formatter.format_header(f"Workflow Cycle {iteration}"))
+                print(formatter.format_info(f"Phase: MONITOR"))
+
+            # MONITOR: Scan repositories for issues
+            scanner = RepositoryScanner(config)
+            results = scanner.scan(repositories=repos, include_healthy=False)
+
+            if args.json:
+                print(json.dumps({"phase": "monitor", "iteration": iteration, "results_count": len(results)}))
+            else:
+                print(formatter.format_success(f"Found {len(results)} items needing attention"))
+
+            # Log monitoring results
+            for result in results:
+                logger.log_monitor(iteration, result)
+
+            if not results:
+                if not args.json:
+                    print(formatter.format_info("No issues found, waiting for next cycle..."))
+                if args.iterations != 0 and iteration >= args.iterations:
+                    break
+                if args.iterations == 0:
+                    time.sleep(args.interval)
+                    continue
+                break
+
+            # AUDIT: Assess risks and false positives
+            if not args.json:
+                print(formatter.format_info(f"Phase: AUDIT"))
+
+            planner = DispatchPlanner(config)
+            candidates = planner.build(results)
+            assessor = CandidateAssessor()
+            reports = assessor.assess(results, candidates)
+            gated_candidates = gate_dispatch_candidates(candidates, reports)
+
+            if args.json:
+                print(json.dumps({"phase": "audit", "iteration": iteration, "reports_count": len(reports)}))
+            else:
+                actionable = sum(1 for r in reports if r.outcome == "actionable")
+                verify = sum(1 for r in reports if r.outcome == "verify")
+                hold = sum(1 for r in reports if r.outcome == "hold")
+                print(formatter.format_success(f"Assessment complete: {actionable} actionable, {verify} verify, {hold} hold"))
+
+            # Log audit results
+            for report in reports:
+                logger.log_audit(iteration, report)
+
+            # Log dispatch candidates
+            for candidate in gated_candidates:
+                logger.log_dispatch(iteration, candidate)
+
+            # REVIEW & TEST: Process actionable items
+            if not args.json:
+                print(formatter.format_info(f"Phase: REVIEW & TEST"))
+
+            processed = 0
+            for candidate in gated_candidates:
+                if candidate.assessment_outcome != "actionable":
+                    continue
+
+                if candidate.status not in {"ready", "inspect_only"}:
+                    continue
+
+                try:
+                    # Run safe inspection commands
+                    runner = LocalRunner(config)
+                    session = runner.run(candidate)
+
+                    logger.log_test(
+                        iteration,
+                        candidate.repository,
+                        candidate.number,
+                        "completed",
+                        {"actions_run": len(session.executions)},
+                    )
+
+                    # Generate proposal if auto-apply is enabled and confidence is high
+                    if args.auto_apply and candidate.assessment_confidence >= 80:
+                        if not args.json:
+                            print(formatter.format_info(
+                                f"Generating proposal for {candidate.repository}#{candidate.number}"
+                            ))
+
+                        generator = ProposalGenerator(config)
+                        proposal = generator.generate(candidate, session)
+
+                        logger.log_review(
+                            iteration,
+                            candidate.repository,
+                            candidate.number,
+                            "proposed",
+                            {"proposal_confidence": candidate.assessment_confidence},
+                        )
+
+                        if not args.json:
+                            print(formatter.format_success(
+                                f"Proposal generated for PR #{candidate.number}"
+                            ))
+
+                    processed += 1
+
+                except Exception as e:
+                    logger.log_test(
+                        iteration,
+                        candidate.repository,
+                        candidate.number,
+                        "failed",
+                        {"error": str(e)},
+                    )
+                    if not args.json:
+                        print(formatter.format_error(f"Error processing PR #{candidate.number}: {e}"))
+
+            if not args.json:
+                print(formatter.format_success(f"Processed {processed} items"))
+
+            # LEARN: Display insights if requested
+            if args.show_learning:
+                if not args.json:
+                    print(formatter.format_info(f"Phase: LEARN"))
+
+                insights = learner.get_false_positive_indicators()
+                security_insights = learner.get_security_vulnerability_insights()
+
+                if args.json:
+                    print(json.dumps({
+                        "phase": "learn",
+                        "iteration": iteration,
+                        "insights": [
+                            {
+                                "category": i.category,
+                                "pattern": i.pattern,
+                                "confidence": i.confidence,
+                                "occurrences": i.occurrences,
+                            }
+                            for i in insights + security_insights
+                        ],
+                    }))
+                else:
+                    if insights or security_insights:
+                        print(formatter.format_header("Learning Insights:"))
+                        for insight in insights + security_insights:
+                            print(formatter.format_info(
+                                f"  [{insight.category}] {insight.pattern}: "
+                                f"{insight.occurrences} occurrences (confidence: {insight.confidence:.1%})"
+                            ))
+                    else:
+                        print(formatter.format_info("No new insights yet"))
+
+            # LOG: Display session summary
+            if not args.json:
+                print(formatter.format_info(f"Phase: LOG"))
+                metrics = logger.get_metrics()
+                print(formatter.format_success(f"Session log: {logger.get_session_path()}"))
+                print(formatter.format_info(f"Total entries: {metrics['total_entries']}"))
+
+            # REPEAT: Check if we should continue
+            if args.iterations != 0 and iteration >= args.iterations:
+                break
+
+            if args.iterations == 0:
+                if not args.json:
+                    print(formatter.format_info(f"Waiting {args.interval}s before next cycle..."))
+                time.sleep(args.interval)
+
+    except KeyboardInterrupt:
+        if not args.json:
+            print("\n" + formatter.format_warning("Workflow interrupted by user"))
+        return 0
+
+    if not args.json:
+        print(formatter.format_header("Workflow Complete"))
+        metrics = logger.get_metrics()
+        print(json.dumps(metrics, indent=2))
+
+    return 0
+
+
+def _run_learn(args: argparse.Namespace) -> int:
+    """Analyze historical workflow logs and display learning insights."""
+    learner = PatternLearner(log_dir=args.log_dir if args.log_dir else None)
+
+    formatter = TerminalFormatter(
+        use_color=not args.no_color,
+        kali_mode=getattr(args, "kali_mode", False),
+    )
+
+    if args.repository:
+        # Analyze specific repository
+        pattern = learner.analyze_repository_patterns(args.repository)
+
+        if args.json:
+            print(json.dumps({
+                "repository": pattern.repository,
+                "check_patterns": pattern.check_patterns,
+                "outcome_patterns": pattern.outcome_patterns,
+                "success_rate": pattern.success_rate,
+                "total_attempts": pattern.total_attempts,
+            }))
+        else:
+            print(formatter.format_header(f"Repository Analysis: {pattern.repository}"))
+            print(f"Success Rate: {pattern.success_rate:.1%}")
+            print(f"Total Attempts: {pattern.total_attempts}")
+
+            if pattern.check_patterns:
+                print(formatter.format_header("Common Failing Checks:"))
+                for check, count in sorted(pattern.check_patterns.items(), key=lambda x: x[1], reverse=True)[:10]:
+                    print(f"  {check}: {count}")
+
+            if pattern.outcome_patterns:
+                print(formatter.format_header("Outcome Distribution:"))
+                for outcome, count in sorted(pattern.outcome_patterns.items(), key=lambda x: x[1], reverse=True):
+                    print(f"  {outcome}: {count}")
+    else:
+        # Global analysis
+        summary = learner.get_summary_stats()
+        false_positive_insights = learner.get_false_positive_indicators()
+        security_insights = learner.get_security_vulnerability_insights()
+        reliability = learner.get_check_reliability_scores()
+        common_failures = learner.get_common_failure_patterns()
+
+        if args.json:
+            print(json.dumps({
+                "summary": summary,
+                "false_positive_insights": [
+                    {
+                        "category": i.category,
+                        "pattern": i.pattern,
+                        "confidence": i.confidence,
+                        "occurrences": i.occurrences,
+                        "success_rate": i.success_rate,
+                        "evidence": i.evidence,
+                    }
+                    for i in false_positive_insights
+                ],
+                "security_insights": [
+                    {
+                        "category": i.category,
+                        "pattern": i.pattern,
+                        "confidence": i.confidence,
+                        "occurrences": i.occurrences,
+                        "evidence": i.evidence,
+                    }
+                    for i in security_insights
+                ],
+                "check_reliability": reliability,
+                "common_failure_patterns": [
+                    {"pattern": p, "count": c} for p, c in common_failures
+                ],
+            }))
+        else:
+            print(formatter.format_header("Workflow Learning Analysis"))
+
+            if summary:
+                print(formatter.format_header("Summary Statistics:"))
+                print(f"Total Entries: {summary['total_entries']}")
+                print(f"Repositories: {', '.join(summary['repositories'])}")
+
+                if summary.get('phases'):
+                    print(formatter.format_header("Phase Distribution:"))
+                    for phase, count in sorted(summary['phases'].items(), key=lambda x: x[1], reverse=True):
+                        print(f"  {phase}: {count}")
+
+                if summary.get('outcomes'):
+                    print(formatter.format_header("Outcome Distribution:"))
+                    for outcome, count in sorted(summary['outcomes'].items(), key=lambda x: x[1], reverse=True):
+                        print(f"  {outcome}: {count}")
+
+            if false_positive_insights:
+                print(formatter.format_header("False Positive Indicators:"))
+                for insight in false_positive_insights:
+                    print(formatter.format_warning(
+                        f"  {insight.pattern}: {insight.occurrences} occurrences "
+                        f"(confidence: {insight.confidence:.1%})"
+                    ))
+                    for evidence in insight.evidence:
+                        print(f"    - {evidence}")
+
+            if security_insights:
+                print(formatter.format_header("Security Insights:"))
+                for insight in security_insights:
+                    print(formatter.format_error(
+                        f"  {insight.pattern}: {insight.occurrences} occurrences "
+                        f"(confidence: {insight.confidence:.1%})"
+                    ))
+                    for evidence in insight.evidence:
+                        print(f"    - {evidence}")
+
+            if reliability:
+                print(formatter.format_header("Check Reliability Scores:"))
+                for check, score in sorted(reliability.items(), key=lambda x: x[1], reverse=True)[:10]:
+                    print(f"  {check}: {score:.1%}")
+
+            if common_failures:
+                print(formatter.format_header("Common Failure Patterns:"))
+                for pattern, count in common_failures[:10]:
+                    print(f"  {pattern}: {count}")
+
+            if not summary or summary['total_entries'] == 0:
+                print(formatter.format_warning("No historical data found. Run some workflows first!"))
+
+    return 0
 
 
 if __name__ == "__main__":
