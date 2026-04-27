@@ -35,12 +35,15 @@ class PatternLearner:
         self.entries: list[WorkflowLogEntry] = []
         self.loaded = False
 
-    def load_history(self) -> None:
+    def load_history(self, force_reload: bool = False) -> None:
         """Load all historical workflow logs."""
-        if not self.loaded:
+        if force_reload or not self.loaded:
             self.entries = load_session_logs(self.log_dir)
             self.loaded = True
 
+    def refresh(self) -> None:
+        """Refresh cached workflow history from disk."""
+        self.load_history(force_reload=True)
     def analyze_repository_patterns(self, repository: str) -> RepositoryPattern:
         """Analyze patterns for a specific repository."""
         self.load_history()
