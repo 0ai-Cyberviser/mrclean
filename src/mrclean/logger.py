@@ -181,7 +181,7 @@ class WorkflowLogger:
     def _write_entry(self, entry: WorkflowLogEntry) -> None:
         """Write a log entry to the session log file."""
         self.entries.append(entry)
-        with self.session_log.open("a") as f:
+        with self.session_log.open("a", encoding="utf-8") as f:
             f.write(json.dumps(asdict(entry)) + "\n")
 
     def get_session_path(self) -> Path:
